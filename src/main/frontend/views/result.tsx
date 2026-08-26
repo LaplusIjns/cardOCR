@@ -55,13 +55,17 @@ const fields: ReadonlyArray<{ key: EditableField; label: string; area?: boolean 
 export default function ResultView() {
   const [cards, setCards] = useState<BusinessCardDTO[]>([]);
   const [selectedPreview, setSelectedPreview] = useState<string | null>(null);
+  const [previewRotation, setPreviewRotation] = useState(0);
   const [editingCard, setEditingCard] = useState<BusinessCardDTO | null>(null);
   const [saving, setSaving] = useState(false);
   const subscriptionRef = useRef<any>(null);
   const sessionIdRef = useRef('');
 
   useEffect(() => {
-    (globalThis as any).setSelectedPreview = setSelectedPreview;
+    (globalThis as any).setSelectedPreview = (imageUrl: string) => {
+      setPreviewRotation(0);
+      setSelectedPreview(imageUrl);
+    };
     return () => {
       delete (globalThis as any).setSelectedPreview;
     };
@@ -146,7 +150,22 @@ export default function ResultView() {
       </FormLayout>
     </Dialog>}
     {selectedPreview && <Dialog headerTitle="名片圖片" opened onOpenedChanged={(event: any) => {
-      if (!event.detail.value) setSelectedPreview(null);
-    }}><img src={`blob/${selectedPreview}`} alt="名片原圖" style={{ width: '100%', height: 'auto', borderRadius: 8 }} /></Dialog>}
+      if (!event.detail.value) {
+        setSelectedPreview(null);
+        setPreviewRotation(0);
+      }
+    }}>
+      <div className="flex flex-col gap-m items-center">
+        <div className="flex gap-s items-center justify-center" role="group" aria-label="旋轉名片圖片">
+          <Button onClick={() => setPreviewRotation((angle) => angle - 90)} aria-label="向左旋轉 90 度">↶ 向左轉</Button>
+          <Button onClick={() => setPreviewRotation(0)} disabled={previewRotation === 0}>重設</Button>
+          <Button onClick={() => setPreviewRotation((angle) => angle + 90)} aria-label="向右旋轉 90 度">向右轉 ↷</Button>
+          <span aria-live="polite">{((previewRotation % 360) + 360) % 360}°</span>
+        </div>
+        <div style={{ width: 'min(80vw, 900px)', height: '65vh', overflow: 'auto', display: 'grid', placeItems: 'center', padding: 16, boxSizing: 'border-box' }}>
+          <img src={`blob/${selectedPreview}`} alt="名片原圖" style={{ maxWidth: '100%', maxHeight: '100%', borderRadius: 8, transform: `rotate(${previewRotation}deg)`, transition: 'transform 180ms ease' }} />
+        </div>
+      </div>
+    </Dialog>}
   </div>;
 }
