@@ -43,12 +43,11 @@ public class SecurityConfig {
     @Bean
     SecurityFilterChain securityFilterChain(final HttpSecurity http) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
-                .requestMatchers("/api/exports/**")
+                .requestMatchers("/api/exports/**","/blob/**","/thumbnail/**")
                 .authenticated()
                 .requestMatchers(
                         "/api/auth/**",
                         "/connect/AuthService/**",
-                        "/blob/**",
                         "/thumbnail/**",
                         "/login",
                         "/register",

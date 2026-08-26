@@ -36,10 +36,20 @@ export default function ExportView() {
             <p className="text-secondary mb-0">下載 ZIP 壓縮包，內含 cards.json 與 images 資料夾中的所有原始圖片。</p>
           </div>
         </div>
-        <Button theme="primary" disabled={cardCount === 0} onClick={() => globalThis.location.assign(exportUrl('archive'))}>
-          <Icon slot="prefix" src="line-awesome/svg/download-solid.svg" />
-          下載 ZIP
-        </Button>
+		<Button
+		  theme="primary"
+		  disabled={cardCount === 0}
+		  onClick={() =>
+		    globalThis.open(
+		      exportUrl('archive'),
+		      '_blank',
+		      'noopener,noreferrer',
+		    )
+		  }
+		>
+		  <Icon slot="prefix" src="line-awesome/svg/download-solid.svg" />
+		  下載 ZIP
+		</Button>
       </section>
 
       <section className="border rounded-l p-l flex flex-col gap-m">
@@ -50,10 +60,20 @@ export default function ExportView() {
             <p className="text-secondary mb-0">下載 XLSX 格式的名片欄位資料，不包含圖片。</p>
           </div>
         </div>
-        <Button theme="primary success" disabled={cardCount === 0} onClick={() => globalThis.location.assign(exportUrl('excel'))}>
-          <Icon slot="prefix" src="line-awesome/svg/download-solid.svg" />
-          下載 Excel
-        </Button>
+		<Button
+		  theme="primary success"
+		  disabled={cardCount === 0}
+		  onClick={() =>
+		    globalThis.open(
+		      exportUrl('excel'),
+		      '_blank',
+		      'noopener,noreferrer',
+		    )
+		  }
+		>
+		  <Icon slot="prefix" src="line-awesome/svg/download-solid.svg" />
+		  下載 Excel
+		</Button>
       </section>
     </div>
   );

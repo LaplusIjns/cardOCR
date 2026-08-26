@@ -1,9 +1,5 @@
 package com.github.laplusijns.card;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.laplusijns.auth.UserAccount;
-import com.github.laplusijns.auth.UserAccountRepository;
-import com.github.laplusijns.image.ImageStorageService;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -16,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+
 import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.Font;
 import org.apache.poi.ss.usermodel.Row;
@@ -29,6 +26,13 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.github.laplusijns.auth.UserAccount;
+import com.github.laplusijns.auth.UserAccountRepository;
+import com.github.laplusijns.image.ImageStorageService;
 
 @RestController
 @RequestMapping("/api/exports")
@@ -52,6 +56,8 @@ public class BusinessCardExportController {
         this.userAccountRepository = userAccountRepository;
         this.businessCardRepository = businessCardRepository;
         this.imageStorageService = imageStorageService;
+        objectMapper.registerModule(new JavaTimeModule());
+        objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
     @GetMapping(value = "/archive", produces = "application/zip")
