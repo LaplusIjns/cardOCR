@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,10 +36,8 @@ public class BusinessCardExportController {
 
     private static final DateTimeFormatter FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
             .withZone(ZoneId.systemDefault());
-    private static final DateTimeFormatter CELL_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-            .withZone(ZoneId.systemDefault());
     private static final String[] HEADERS = {
-        "編號", "公司名稱", "姓名", "職稱", "電話", "行動電話", "傳真", "EMAIL", "地址", "備註", "建立時間"
+        "編號", "公司名稱", "姓名", "職稱", "電話", "行動電話", "傳真", "EMAIL", "地址", "備註"
     };
 
     private final UserAccountRepository userAccountRepository;
@@ -97,7 +96,7 @@ public class BusinessCardExportController {
             }
 
             int rowIndex = 1;
-            for (BusinessCard card : cards) {
+            for (BusinessCard card : cards.stream().sorted(Comparator.comparing(BusinessCard::getId)).toList()) {
                 final Row row = sheet.createRow(rowIndex++);
                 final String[] values = values(card);
                 for (int column = 0; column < values.length; column++) {
@@ -146,7 +145,7 @@ public class BusinessCardExportController {
         return new String[] {
             String.valueOf(card.getId()), text(card.getCompanyName()), text(card.getName()), text(card.getJobTitle()),
             text(card.getTelephone()), text(card.getMobilePhone()), text(card.getFax()), text(card.getEmail()),
-            text(card.getAddress()), text(card.getNotes()), CELL_TIME.format(card.getCreatedAt())
+            text(card.getAddress()), text(card.getNotes())
         };
     }
 
