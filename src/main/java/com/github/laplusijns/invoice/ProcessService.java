@@ -14,8 +14,12 @@ import com.vaadin.flow.server.VaadinServletRequest;
 import com.vaadin.hilla.Endpoint;
 import jakarta.annotation.security.PermitAll;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -35,6 +39,10 @@ import reactor.core.publisher.Flux;
 @Endpoint
 @PermitAll
 public class ProcessService {
+    private static final int MAX_BATCH_IMAGES = 20;
+    private static final int MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+    private static final Set<String> SUPPORTED_IMAGE_TYPES =
+            Set.of("image/jpeg", "image/png", "image/webp", "image/gif");
     private static final Logger log = LoggerFactory.getLogger(ProcessService.class);
     private static final String AI_PROMPT = """
             你是一個專業的名片 OCR 助理。請辨識圖片中的名片資訊，並只輸出 JSON，不要輸出 Markdown 或說明文字。
@@ -96,24 +104,74 @@ public class ProcessService {
     }
 
     public void process(final String base64Image, final String sessionId) {
-        final UserAccount user = currentUser();
-        final String imageId = UUID.randomUUID().toString();
-        final String[] parts = base64Image.split(";base64,", 2);
-        if (parts.length != 2) {
-            throw new IllegalArgumentException("Invalid image data URL");
+        processImages(Collections.singletonList(base64Image), sessionId);
+    }
+
+    public int processImages(final List<String> base64Images, final String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("Session id is required");
         }
-        final String mimeType = parts[0].replace("data:", "");
-        final byte[] imageBytes = Base64.getDecoder().decode(parts[1]);
+        if (base64Images == null || base64Images.isEmpty()) {
+            throw new IllegalArgumentException("At least one image is required");
+        }
+        if (base64Images.size() > MAX_BATCH_IMAGES) {
+            throw new IllegalArgumentException("A maximum of " + MAX_BATCH_IMAGES + " images can be uploaded at once");
+        }
+
+        final UserAccount user = currentUser();
+        final List<ImageUpload> images = new ArrayList<>(base64Images.size());
+        for (final String base64Image : base64Images) {
+            images.add(parseImage(base64Image));
+        }
+        for (final ImageUpload image : images) {
+            enqueue(user, image, sessionId);
+        }
+        return images.size();
+    }
+
+    private void enqueue(final UserAccount user, final ImageUpload image, final String sessionId) {
+        final String imageId = UUID.randomUUID().toString();
         final String imagePath;
         try {
-            imagePath = imageStorageService.store(user.getId(), imageId, mimeType, imageBytes);
+            imagePath = imageStorageService.store(user.getId(), imageId, image.mimeType(), image.bytes());
         } catch (IOException exception) {
             throw new IllegalStateException("Unable to store image", exception);
         }
 
-        imageCache.put(imageId, imageBytes);
+        imageCache.put(imageId, image.bytes());
         channels.emit(sessionId, BusinessCardDTO.progress(imageId));
-        workerExecutor.submit(() -> recognize(user, imageId, imagePath, mimeType, imageBytes, sessionId));
+        workerExecutor.submit(() -> recognize(user, imageId, imagePath, image.mimeType(), image.bytes(), sessionId));
+    }
+
+    private static ImageUpload parseImage(final String base64Image) {
+        if (base64Image == null || base64Image.isBlank()) {
+            throw new IllegalArgumentException("Image data is required");
+        }
+        final String[] parts = base64Image.split(";base64,", 2);
+        if (parts.length != 2 || !parts[0].startsWith("data:")) {
+            throw new IllegalArgumentException("Invalid image data URL");
+        }
+        final String mimeType = parts[0].substring("data:".length()).toLowerCase(Locale.ROOT);
+        if (!SUPPORTED_IMAGE_TYPES.contains(mimeType)) {
+            throw new IllegalArgumentException("Unsupported image type: " + mimeType);
+        }
+        final int maxBase64Length = ((MAX_IMAGE_BYTES + 2) / 3) * 4;
+        if (parts[1].length() > maxBase64Length) {
+            throw new IllegalArgumentException("Each image must be 10 MB or smaller");
+        }
+        final byte[] imageBytes;
+        try {
+            imageBytes = Base64.getDecoder().decode(parts[1]);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("Invalid base64 image data", exception);
+        }
+        if (imageBytes.length == 0) {
+            throw new IllegalArgumentException("Image is empty");
+        }
+        if (imageBytes.length > MAX_IMAGE_BYTES) {
+            throw new IllegalArgumentException("Each image must be 10 MB or smaller");
+        }
+        return new ImageUpload(mimeType, imageBytes);
     }
 
     public void deleteCard(final Long id) {
@@ -278,4 +336,6 @@ public class ProcessService {
         public String address = "";
         public String notes = "";
     }
+
+    private record ImageUpload(String mimeType, byte[] bytes) {}
 }

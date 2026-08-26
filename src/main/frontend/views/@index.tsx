@@ -4,9 +4,13 @@ import { Notification, Button } from '@vaadin/react-components';
 import { ProcessService } from 'Frontend/generated/endpoints';
 import { useBlocker, BlockerFunction } from 'react-router';
 
+const MAX_UPLOAD_FILES = 20;
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const SUPPORTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
 export const config: ViewConfig = {
   menu: { order: 0, icon: 'line-awesome/svg/camera-solid.svg' },
-  title: '相機',
+  title: '拍照與上傳',
 };
 
 // 封裝導航前阻止 hook
@@ -27,11 +31,13 @@ export function useBeforeNavigate(when: boolean, onBeforeNavigate: () => void) {
 export default function CameraView() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const jsessionidRef = useRef<any>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const jsessionidRef = useRef<string | null>(null);
 
   const [flash, setFlash] = useState(false);
   const flashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [previewQueue, setPreviewQueue] = useState<PhotoTask[]>([]);
+  const [uploading, setUploading] = useState(false);
 
   type PhotoTask = {
     id: string;
@@ -47,6 +53,61 @@ export default function CameraView() {
       jsessionidRef.current = jsessionid;
     });
   }, []);
+
+  const sessionId = useCallback(async () => {
+    if (jsessionidRef.current) return jsessionidRef.current;
+    const id = await ProcessService.jsessionId();
+    jsessionidRef.current = id;
+    return id;
+  }, []);
+
+  const readImage = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => (typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('讀取圖片失敗')));
+      reader.onerror = () => reject(reader.error ?? new Error('讀取圖片失敗'));
+      reader.readAsDataURL(file);
+    });
+
+  const uploadImages = async (files: FileList | null) => {
+    if (!files?.length) return;
+    const selected = Array.from(files);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (selected.length > MAX_UPLOAD_FILES) {
+      Notification.show(`一次最多上傳 ${MAX_UPLOAD_FILES} 張圖片`, {
+        theme: 'error',
+        position: 'top-center',
+      });
+      return;
+    }
+    const unsupported = selected.find((file) => !SUPPORTED_IMAGE_TYPES.has(file.type));
+    if (unsupported) {
+      Notification.show(`${unsupported.name} 不是支援的圖片格式`, { theme: 'error', position: 'top-center' });
+      return;
+    }
+    const oversized = selected.find((file) => file.size > MAX_FILE_SIZE);
+    if (oversized) {
+      Notification.show(`${oversized.name} 超過 10 MB`, { theme: 'error', position: 'top-center' });
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const images = await Promise.all(selected.map(readImage));
+      const accepted = await ProcessService.processImages(images, await sessionId());
+      Notification.show(`已上傳 ${accepted} 張圖片，正在進行 OCR`, {
+        duration: 3000,
+        theme: 'success',
+        position: 'top-center',
+      });
+    } catch (error) {
+      console.error(error);
+      Notification.show('圖片上傳失敗，請稍後再試', { theme: 'error', position: 'top-center' });
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
 
   // 處理下一張圖片
   const processNext = useCallback(async () => {
@@ -65,7 +126,7 @@ export default function CameraView() {
     const start = Date.now();
 
     try {
-      await ProcessService.process(next.image, jsessionidRef.current);
+      await ProcessService.process(next.image, await sessionId());
     } catch (e) {
       console.error(e);
       Notification.show('圖片處理失敗', {
@@ -85,7 +146,7 @@ export default function CameraView() {
         }
       }, remaining);
     }
-  }, []);
+  }, [sessionId]);
 
   // 阻止離開頁面時隊列還在上傳
   useBeforeNavigate(queueRef.current.length > 0, async () => {
@@ -95,8 +156,9 @@ export default function CameraView() {
       theme: 'warning',
     });
 
+    const currentSessionId = await sessionId();
     const uploads = queueRef.current.map((t) =>
-      ProcessService.process(t.image, jsessionidRef.current).catch((err) => console.error('上傳失敗', err)),
+      ProcessService.process(t.image, currentSessionId).catch((err) => console.error('上傳失敗', err)),
     );
 
     await Promise.all(uploads);
@@ -264,6 +326,14 @@ export default function CameraView() {
   return (
     <div className="flex flex-col h-full items-center p-l text-center box-border">
       <div style={{ position: 'relative', height: '90vh', width: '100%' }}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/gif"
+          multiple
+          hidden
+          onChange={(event) => void uploadImages(event.currentTarget.files)}
+        />
         <video
           ref={videoRef}
           autoPlay
@@ -289,6 +359,14 @@ export default function CameraView() {
           className="text-center bg-contrast-40 border border-error text-error absolute font-bold text-3xl shadow-xs rounded-l p-l"
           style={{ bottom: '3%', left: '50%', transform: 'translateX(-50%)' }}>
           <span className="text-primary-contrast">●</span> 拍照
+        </Button>
+        <Button
+          theme="primary"
+          disabled={uploading}
+          onClick={() => fileInputRef.current?.click()}
+          className="absolute font-bold text-xl shadow-xs rounded-l p-m"
+          style={{ top: '3%', right: '3%' }}>
+          {uploading ? '上傳中…' : '上傳多張圖片'}
         </Button>
       </div>
 
