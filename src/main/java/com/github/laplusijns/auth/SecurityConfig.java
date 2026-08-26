@@ -43,7 +43,14 @@ public class SecurityConfig {
     @Bean
     SecurityFilterChain securityFilterChain(final HttpSecurity http) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
-                .requestMatchers("/api/auth/**", "/connect/AuthService/**", "/login", "/register", "/line-awesome/**")
+                .requestMatchers(
+                        "/api/auth/**",
+                        "/connect/AuthService/**",
+                        "/blob/**",
+                        "/thumbnail/**",
+                        "/login",
+                        "/register",
+                        "/line-awesome/**")
                 .permitAll());
         http.csrf(csrf -> csrf.ignoringRequestMatchers("/api/auth/**"));
         http.with(vaadin(), configurer -> configurer.loginView("/login"));
