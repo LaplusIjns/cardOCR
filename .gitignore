@@ -1,0 +1,58 @@
+target/
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# The following files are generated/updated by Hilla
+node_modules/
+src/main/frontend/generated/
+vite.generated.ts
+src/main/bundles
+package-lock.json
+
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### tmp remove auto generated code ###
+package.json
+package-lock.json
+*.generated.*
+package-lock.json
+package.json
+tsconfig.json
+types.d.ts
+uploads/
+
+src/main/resources/*application.properties
