@@ -1,5 +1,5 @@
 import { ViewConfig } from '@vaadin/hilla-file-router/types.js';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Notification, Button } from '@vaadin/react-components';
 import { ProcessService } from 'Frontend/generated/endpoints';
 import { useBlocker, BlockerFunction } from 'react-router';
@@ -14,17 +14,26 @@ export const config: ViewConfig = {
 };
 
 // 封裝導航前阻止 hook
-export function useBeforeNavigate(when: boolean, onBeforeNavigate: () => void) {
-  const blockFn: BlockerFunction = ({ currentLocation, nextLocation }) =>
-    when && currentLocation.pathname !== nextLocation.pathname;
+export function useBeforeNavigate(shouldBlock: () => boolean, onBeforeNavigate: () => Promise<void>) {
+  const handlingRef = useRef(false);
+  const blockFn: BlockerFunction = useCallback(
+    ({ currentLocation, nextLocation }) =>
+      shouldBlock() && currentLocation.pathname !== nextLocation.pathname,
+    [shouldBlock],
+  );
 
   const blocker = useBlocker(blockFn);
 
   useEffect(() => {
-    if (blocker.state === 'blocked') {
-      onBeforeNavigate();
-      blocker.proceed();
-    }
+    if (blocker.state !== 'blocked' || handlingRef.current) return;
+
+    handlingRef.current = true;
+    void onBeforeNavigate()
+      .then(() => blocker.proceed())
+      .catch(() => blocker.reset())
+      .finally(() => {
+        handlingRef.current = false;
+      });
   }, [blocker, onBeforeNavigate]);
 }
 
@@ -46,7 +55,9 @@ export default function CameraView() {
 
   // 上傳隊列及處理狀態
   const queueRef = useRef<PhotoTask[]>([]);
-  const processingRef = useRef(false);
+  const previewQueueRef = useRef<PhotoTask[]>([]);
+  const processingPromiseRef = useRef<Promise<void> | null>(null);
+  const previewTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
   useEffect(() => {
     ProcessService.jsessionId().then((jsessionid: string) => {
@@ -109,73 +120,99 @@ export default function CameraView() {
     }
   };
 
-  // 處理下一張圖片
-  const processNext = useCallback(async () => {
-    if (processingRef.current) return;
-    const next = queueRef.current[0];
-    if (!next) return;
+  const replacePreviewQueue = useCallback((tasks: PhotoTask[]) => {
+    previewQueueRef.current = tasks;
+    setPreviewQueue(tasks);
+  }, []);
 
-    processingRef.current = true;
+  // 逐張上傳，並保留同一個 Promise 供切頁流程等待，避免重複送出同一張照片。
+  const processNext = useCallback((): Promise<void> => {
+    if (processingPromiseRef.current) return processingPromiseRef.current;
 
-    Notification.show('圖片已進入處理流程', {
-      duration: 2000,
-      theme: 'success',
-      position: 'top-center',
-    });
+    const processQueue = async () => {
+      while (queueRef.current.length > 0) {
+        const next = queueRef.current[0];
 
-    const start = Date.now();
+        Notification.show('圖片已進入處理流程', {
+          duration: 2000,
+          theme: 'success',
+          position: 'top-center',
+        });
 
-    try {
-      await ProcessService.process(next.image, await sessionId());
-    } catch (e) {
-      console.error(e);
-      Notification.show('圖片處理失敗', {
-        theme: 'error',
-        position: 'top-center',
-      });
-    } finally {
-      const elapsed = Date.now() - start;
-      const MIN_PREVIEW_TIME = 100;
-      const remaining = Math.max(0, MIN_PREVIEW_TIME - elapsed);
-
-      setTimeout(() => {
-        processingRef.current = false;
-        queueRef.current.shift();
-        if (queueRef.current.length > 0) {
-          queueMicrotask(processNext);
+        try {
+          await ProcessService.process(next.image, await sessionId());
+          queueRef.current.shift();
+        } catch (error) {
+          console.error(error);
+          Notification.show('圖片處理失敗，請稍後再試', {
+            theme: 'error',
+            position: 'top-center',
+          });
+          throw error;
         }
-      }, remaining);
-    }
+      }
+    };
+
+    const processingPromise = processQueue().finally(() => {
+      if (processingPromiseRef.current === processingPromise) {
+        processingPromiseRef.current = null;
+      }
+    });
+    processingPromiseRef.current = processingPromise;
+    return processingPromise;
   }, [sessionId]);
 
-  // 阻止離開頁面時隊列還在上傳
-  useBeforeNavigate(queueRef.current.length > 0, async () => {
+  const queueForProcessing = useCallback(
+    (task: PhotoTask) => {
+      if (!queueRef.current.some((queuedTask) => queuedTask.id === task.id)) {
+        queueRef.current.push(task);
+      }
+      void processNext().catch(() => undefined);
+    },
+    [processNext],
+  );
+
+  const hasPendingPhotos = useCallback(
+    () => previewQueueRef.current.length > 0 || queueRef.current.length > 0,
+    [],
+  );
+
+  // 預覽中的第一張照片也必須在切頁前送出；上傳失敗時留在原頁供使用者重試。
+  const uploadBeforeNavigate = useCallback(async () => {
     Notification.show('正在上傳...', {
       duration: 5000,
       position: 'top-center',
       theme: 'warning',
     });
 
-    const currentSessionId = await sessionId();
-    const uploads = queueRef.current.map((t) =>
-      ProcessService.process(t.image, currentSessionId).catch((err) => console.error('上傳失敗', err)),
-    );
+    previewTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout));
+    previewTimeoutsRef.current.clear();
 
-    await Promise.all(uploads);
-    queueRef.current = [];
-  });
+    const previewTasks = previewQueueRef.current;
+    replacePreviewQueue([]);
+    previewTasks.forEach((task) => {
+      if (!queueRef.current.some((queuedTask) => queuedTask.id === task.id)) {
+        queueRef.current.push(task);
+      }
+    });
 
-  // 離開頁面時自動上傳
+    await processNext();
+  }, [processNext, replacePreviewQueue]);
+
+  // 阻止離開頁面時隊列還在上傳
+  useBeforeNavigate(hasPendingPhotos, uploadBeforeNavigate);
+
+  // 瀏覽器關閉或重新整理時無法可靠地完成非同步上傳，因此提醒使用者不要直接離開。
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (queueRef.current.length > 0) {
+      if (hasPendingPhotos()) {
         e.preventDefault();
-        queueRef.current.forEach((t) => navigator.sendBeacon('/process', JSON.stringify(t)));
+        e.returnValue = '';
       }
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, []);
+  }, [hasPendingPhotos]);
 
   // 開啟攝像頭
   useEffect(() => {
@@ -198,6 +235,9 @@ export default function CameraView() {
     startCamera();
 
     return () => {
+      previewTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout));
+      previewTimeoutsRef.current.clear();
+      if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current);
       if (videoRef.current?.srcObject) {
         const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
         tracks.forEach((track) => track.stop());
@@ -298,29 +338,31 @@ export default function CameraView() {
       flashTimeoutRef.current = null;
     }, 100);
 
-    const preDate = previewQueue;
+    const previousPreview = previewQueueRef.current;
 
-    setPreviewQueue([task]);
+    replacePreviewQueue([task]);
 
-    preDate.forEach((oldTask) => {
-      queueRef.current.push(oldTask);
-    });
-
-    processNext();
+    previousPreview.forEach(queueForProcessing);
 
     // 5 秒後自動加入處理隊列
-    globalThis.setTimeout(() => {
-      setPreviewQueue((prev) => {
-        const exists = prev.find((t) => t.id === task.id);
+    const previewTimeout = globalThis.setTimeout(() => {
+      previewTimeoutsRef.current.delete(task.id);
+      if (!previewQueueRef.current.some((previewTask) => previewTask.id === task.id)) return;
 
-        if (!exists) return prev;
-
-        queueRef.current.push(task);
-        processNext();
-
-        return [];
-      });
+      replacePreviewQueue(previewQueueRef.current.filter((previewTask) => previewTask.id !== task.id));
+      queueForProcessing(task);
     }, 5000);
+    previewTimeoutsRef.current.set(task.id, previewTimeout);
+  };
+
+  const deletePreview = () => {
+    const task = previewQueueRef.current.at(-1);
+    if (!task) return;
+
+    const previewTimeout = previewTimeoutsRef.current.get(task.id);
+    if (previewTimeout) clearTimeout(previewTimeout);
+    previewTimeoutsRef.current.delete(task.id);
+    replacePreviewQueue(previewQueueRef.current.filter((previewTask) => previewTask.id !== task.id));
   };
 
   return (
@@ -382,12 +424,7 @@ export default function CameraView() {
             <img src={previewQueue[previewQueue.length - 1].image} style={{ width: '20vw' }} />
             <Button
               className="border border-error bg-error-50 font-bold text-2xl"
-              onClick={() =>
-                setPreviewQueue((prev) => {
-                  const newQueue = prev.slice(0, prev.length - 1); // 刪掉最後一筆
-                  return newQueue;
-                })
-              }>
+              onClick={deletePreview}>
               刪除
             </Button>
           </div>
