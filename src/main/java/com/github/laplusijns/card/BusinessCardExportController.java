@@ -63,7 +63,7 @@ public class BusinessCardExportController {
         try (ZipOutputStream zip = new ZipOutputStream(output, StandardCharsets.UTF_8)) {
             final List<Map<String, Object>> records = cards.stream().map(this::record).toList();
             zip.putNextEntry(new ZipEntry("cards.json"));
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(zip, records);
+            zip.write(objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(records));
             zip.closeEntry();
 
             for (BusinessCard card : cards) {
