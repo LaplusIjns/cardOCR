@@ -7,10 +7,9 @@ import {
   SideNav,
   SideNavItem,
   Button,
-  type AppLayoutElement,
   HorizontalLayout,
 } from '@vaadin/react-components';
-import { Suspense, useEffect, useState, useRef } from 'react';
+import { Suspense, useEffect, useState, type CSSProperties } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router';
 import { getSession, logout, type SessionInfo } from 'Frontend/auth';
 
@@ -32,7 +31,6 @@ export default function MainLayout() {
   const location = useLocation();
   const [isMobile, setIsMobile] = useState(false);
   const [session, setSession] = useState<SessionInfo | null>(null);
-  const appLayoutRef = useRef<AppLayoutElement>(null);
   const publicRoute = location.pathname === '/login' || location.pathname === '/register';
 
   useEffect(() => {
@@ -73,14 +71,6 @@ export default function MainLayout() {
     };
   }, [location.pathname, navigate, publicRoute]);
 
-  useEffect(() => {
-    const appLayout = appLayoutRef.current;
-    if (appLayout && isMobile) {
-      appLayout.style.setProperty('--vaadin-app-layout-touch-optimized', 'true');
-      (appLayout as any)._updateTouchOptimizedMode();
-    }
-  }, [appLayoutRef.current]);
-
   const toggleDarkMode = () => {
     darkModeSignal.value = !darkModeSignal.value;
   };
@@ -104,7 +94,10 @@ export default function MainLayout() {
   }
 
   return (
-    <AppLayout ref={appLayoutRef} primarySection="drawer">
+    <AppLayout
+      primarySection="drawer"
+      style={{ '--vaadin-app-layout-touch-optimized': isMobile ? 'true' : 'false' } as CSSProperties}
+    >
       {isMobile ? (
         <HorizontalLayout slot="navbar touch-optimized" className="flex-row" style={{ width: '100%' }}>
           {createMenuItems().map(({ to, title, icon }) => (
