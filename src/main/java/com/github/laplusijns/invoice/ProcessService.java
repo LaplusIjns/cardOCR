@@ -8,8 +8,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
 
 import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
@@ -35,6 +38,7 @@ import com.vaadin.flow.server.VaadinService;
 import com.vaadin.flow.server.VaadinServletRequest;
 import com.vaadin.hilla.Endpoint;
 
+import jakarta.annotation.PreDestroy;
 import jakarta.annotation.security.PermitAll;
 import reactor.core.publisher.Flux;
 
@@ -74,6 +78,72 @@ public class ProcessService {
 			7. 特別注意容易混淆的字元：0/O、1/I/l、5/S、8/B、2/Z。
 			8. 判斷欄位時同時參考文字內容、標示及版面位置。
 			""";
+	private static final String FIELD_VERIFICATION_PROMPT = """
+			你是專業的繁體中文名片 OCR 複核系統。
+			你的任務是重新檢查圖片中的單一指定欄位，確認初次辨識的空白是否正確。
+
+			複核規則：
+			1. 只尋找使用者指定的欄位，不要回傳其他欄位的內容。
+			2. 仔細檢查整張圖片、姓名附近、小字、邊緣與不同閱讀方向。
+			3. 只能使用圖片中明確可見的資訊，禁止猜測、補字或臆測。
+			4. 保留繁體中文及原始字元；Email、網址與號碼必須逐字核對。
+			5. 確認圖片中沒有該欄位，或無法可靠辨識時，回傳空字串。
+			""";
+	private static final List<RecognitionField> RECOGNITION_FIELDS = List.of(
+			new RecognitionField(
+					"companyName",
+					"公司名稱",
+					"公司完整名稱；保留名片上的原始文字。",
+					result -> result.companyName,
+					(result, value) -> result.companyName = value),
+			new RecognitionField(
+					"name",
+					"姓名",
+					"持卡人的姓名；中文姓名優先，同時有中英文姓名時使用「中文姓名（英文姓名）」格式。",
+					result -> result.name,
+					(result, value) -> result.name = value),
+			new RecognitionField(
+					"jobTitle",
+					"職稱與部門",
+					"持卡人的完整職稱及所屬部門或單位；特別檢查姓名附近的小字。",
+					result -> result.jobTitle,
+					(result, value) -> result.jobTitle = value),
+			new RecognitionField(
+					"telephone",
+					"一般電話或公司電話",
+					"只接受明確標示為 T、Tel、Telephone 或電話的號碼，保留國碼、分機及原始格式。",
+					result -> result.telephone,
+					(result, value) -> result.telephone = value),
+			new RecognitionField(
+					"mobilePhone",
+					"行動電話或手機",
+					"只接受明確標示為 M、Mobile、Cell、手機或行動電話的號碼，保留原始格式。",
+					result -> result.mobilePhone,
+					(result, value) -> result.mobilePhone = value),
+			new RecognitionField(
+					"fax",
+					"傳真",
+					"只接受明確標示為 F、Fax、FAX 或傳真的號碼，不可用未分類電話猜測。",
+					result -> result.fax,
+					(result, value) -> result.fax = value),
+			new RecognitionField(
+					"email",
+					"Email",
+					"電子郵件地址；必須逐字辨識，不可自行修正常見拼法。",
+					result -> result.email,
+					(result, value) -> result.email = value),
+			new RecognitionField(
+					"address",
+					"地址",
+					"公司、辦公室或聯絡地址；保留郵遞區號與原始地址文字。",
+					result -> result.address,
+					(result, value) -> result.address = value),
+			new RecognitionField(
+					"notes",
+					"備註資訊",
+					"尋找統一編號、統編、Tax ID、公司網址或股票代號；統編必須有文字標示或明確語意依據。",
+					result -> result.notes,
+					(result, value) -> result.notes = value));
 
 	private final ChatClient chatClient;
 	private final UserAccountRepository userAccountRepository;
@@ -81,17 +151,34 @@ public class ProcessService {
 	private final BusinessCardChannels channels;
 	private final ImageStorageService imageStorageService;
 	private final ImageCache imageCache;
-	private final ExecutorService workerExecutor = Executors.newSingleThreadExecutor();
+	private final ExecutorService workerExecutor;
+	private final ExecutorService fieldRecognitionExecutor;
 
 	public ProcessService(final ChatClient chatClient, final UserAccountRepository userAccountRepository,
 			final BusinessCardRepository businessCardRepository, final BusinessCardChannels channels,
 			final ImageStorageService imageStorageService, final ImageCache imageCache) {
+		this(chatClient, userAccountRepository, businessCardRepository, channels, imageStorageService, imageCache,
+				Executors.newSingleThreadExecutor(), Executors.newVirtualThreadPerTaskExecutor());
+	}
+
+	ProcessService(final ChatClient chatClient, final UserAccountRepository userAccountRepository,
+			final BusinessCardRepository businessCardRepository, final BusinessCardChannels channels,
+			final ImageStorageService imageStorageService, final ImageCache imageCache,
+			final ExecutorService workerExecutor, final ExecutorService fieldRecognitionExecutor) {
 		this.chatClient = chatClient;
 		this.userAccountRepository = userAccountRepository;
 		this.businessCardRepository = businessCardRepository;
 		this.channels = channels;
 		this.imageStorageService = imageStorageService;
 		this.imageCache = imageCache;
+		this.workerExecutor = workerExecutor;
+		this.fieldRecognitionExecutor = fieldRecognitionExecutor;
+	}
+
+	@PreDestroy
+	void shutdownExecutors() {
+		workerExecutor.shutdown();
+		fieldRecognitionExecutor.shutdown();
 	}
 
 	@NonNull
@@ -221,15 +308,7 @@ public class ProcessService {
 	private void recognize(final UserAccount user, final String imageId, final String imagePath, final String mimeType,
 			final byte[] imageBytes, final String sessionId) {
 		try {
-			BusinessCardRecognition result = chatClient.prompt().system(AI_PROMPT).user(u -> u.text("""
-					請完整辨識這張名片。
-					請務必掃描整張名片所有可見文字，
-					特別檢查姓名附近的完整職稱，以及小字區域是否有統一編號、統編、公司網址或股票代號。
-					""").media(MimeTypeUtils.parseMimeType(mimeType), new ByteArrayResource(imageBytes))).call()
-					.entity(BusinessCardRecognition.class, spec -> spec.useProviderStructuredOutput().validateSchema());
-			if (result == null) {
-				result = new BusinessCardRecognition();
-			}
+			final BusinessCardRecognition result = recognizeImage(mimeType, imageBytes);
 			final BusinessCard card = new BusinessCard(user, imageId, imagePath);
 			card.setCompanyName(result.companyName);
 			card.setName(result.name);
@@ -253,15 +332,7 @@ public class ProcessService {
 		try {
 			final BusinessCard card = businessCardRepository.findByIdAndUser_Id(cardId, userId)
 					.orElseThrow(() -> new IllegalArgumentException("Business card not found"));
-			BusinessCardRecognition result = chatClient.prompt().system(AI_PROMPT).user(u -> u.text("""
-					請完整辨識這張名片。
-					請務必掃描整張名片所有可見文字，
-					特別檢查姓名附近的完整職稱，以及小字區域是否有統一編號、統編、公司網址或股票代號。
-					""").media(MimeTypeUtils.parseMimeType(mimeType), new ByteArrayResource(imageBytes))).call()
-					.entity(BusinessCardRecognition.class, spec -> spec.useProviderStructuredOutput().validateSchema());
-			if (result == null) {
-				result = new BusinessCardRecognition();
-			}
+			final BusinessCardRecognition result = recognizeImage(mimeType, imageBytes);
 			apply(card, result);
 			channels.emit(sessionId, BusinessCardDTO.from(businessCardRepository.save(card)));
 		} catch (Exception exception) {
@@ -269,6 +340,56 @@ public class ProcessService {
 			businessCardRepository.findByIdAndUser_Id(cardId, userId)
 					.ifPresent(card -> channels.emit(sessionId, BusinessCardDTO.from(card, "重新辨識失敗")));
 		}
+	}
+
+	BusinessCardRecognition recognizeImage(final String mimeType, final byte[] imageBytes) {
+		BusinessCardRecognition result = chatClient.prompt().system(AI_PROMPT).user(u -> u.text("""
+				請完整辨識這張名片。
+				請務必掃描整張名片所有可見文字，
+				特別檢查姓名附近的完整職稱，以及小字區域是否有統一編號、統編、公司網址或股票代號。
+				""").media(MimeTypeUtils.parseMimeType(mimeType), new ByteArrayResource(imageBytes))).call()
+				.entity(BusinessCardRecognition.class, spec -> spec.useProviderStructuredOutput().validateSchema());
+		if (result == null) {
+			result = new BusinessCardRecognition();
+		}
+		return verifyMissingFields(result, mimeType, imageBytes);
+	}
+
+	BusinessCardRecognition verifyMissingFields(final BusinessCardRecognition result, final String mimeType,
+			final byte[] imageBytes) {
+		final List<CompletableFuture<FieldVerification>> verifications = RECOGNITION_FIELDS.stream()
+				.filter(field -> isBlank(field.read(result)))
+				.map(field -> CompletableFuture.supplyAsync(
+							() -> new FieldVerification(field, recognizeField(field, mimeType, imageBytes)),
+							fieldRecognitionExecutor)
+						.exceptionally(exception -> {
+							log.warn("Focused OCR verification failed for field {}", field.apiName(), exception);
+							return new FieldVerification(field, "");
+						}))
+				.toList();
+
+		for (final CompletableFuture<FieldVerification> verificationFuture : verifications) {
+			final FieldVerification verification = verificationFuture.join();
+			final String verifiedValue = isBlank(verification.value()) ? "" : verification.value().strip();
+			verification.field().write(result, verifiedValue);
+		}
+		return result;
+	}
+
+	String recognizeField(final RecognitionField field, final String mimeType, final byte[] imageBytes) {
+		final FieldRecognition result = chatClient.prompt().system(FIELD_VERIFICATION_PROMPT).user(u -> u.text("""
+				初次完整辨識的「%s」欄位是空白，請重新聚焦檢查圖片，確認該欄位是否真的不存在。
+
+				欄位定義：%s
+				若找到多個屬於此欄位的值，使用「、」連接；若確認沒有或無法可靠辨識，value 回傳空字串。
+				""".formatted(field.label(), field.instructions()))
+				.media(MimeTypeUtils.parseMimeType(mimeType), new ByteArrayResource(imageBytes))).call()
+				.entity(FieldRecognition.class, spec -> spec.useProviderStructuredOutput().validateSchema());
+		return result == null ? "" : result.value;
+	}
+
+	private static boolean isBlank(final String value) {
+		return value == null || value.isBlank();
 	}
 
 	private static void apply(final BusinessCard card, final BusinessCardUpdateRequest request) {
@@ -409,6 +530,54 @@ public class ProcessService {
 				只有確實沒有這類資訊時才回傳空字串。
 				""")
 		public String notes = "";
+	}
+
+	@JsonClassDescription("名片單一指定欄位的 OCR 複核結果。")
+	public static class FieldRecognition {
+
+		@JsonPropertyDescription("指定欄位在圖片中的完整內容；確認不存在或無法可靠辨識時回傳空字串。")
+		public String value = "";
+	}
+
+	static final class RecognitionField {
+		private final String apiName;
+		private final String label;
+		private final String instructions;
+		private final Function<BusinessCardRecognition, String> reader;
+		private final BiConsumer<BusinessCardRecognition, String> writer;
+
+		RecognitionField(final String apiName, final String label, final String instructions,
+				final Function<BusinessCardRecognition, String> reader,
+				final BiConsumer<BusinessCardRecognition, String> writer) {
+			this.apiName = apiName;
+			this.label = label;
+			this.instructions = instructions;
+			this.reader = reader;
+			this.writer = writer;
+		}
+
+		String apiName() {
+			return apiName;
+		}
+
+		String label() {
+			return label;
+		}
+
+		String instructions() {
+			return instructions;
+		}
+
+		String read(final BusinessCardRecognition result) {
+			return reader.apply(result);
+		}
+
+		void write(final BusinessCardRecognition result, final String value) {
+			writer.accept(result, value);
+		}
+	}
+
+	private record FieldVerification(RecognitionField field, String value) {
 	}
 
 	private record ImageUpload(String mimeType, byte[] bytes) {
