@@ -3,10 +3,10 @@ package com.github.laplusijns.invoice;
 import com.fasterxml.jackson.annotation.JsonClassDescription;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 
-@JsonClassDescription("名片資訊解析結果。所有內容只能來自圖片理解階段提供的文字證據，無法確認時回傳空字串。")
+@JsonClassDescription("名片資訊解析結果。所有內容只能來自原始圖片或圖片理解階段提供的文字證據，無法確認時回傳空字串。")
 public class BusinessCardRecognition {
 
-    @JsonPropertyDescription("公司完整名稱。保留文字證據中的原始文字；無法確認時回傳空字串。")
+    @JsonPropertyDescription("公司完整名稱。保留原始圖片或文字證據中的原始文字；無法確認時回傳空字串。")
     public String companyName = "";
 
     @JsonPropertyDescription("""
@@ -43,7 +43,7 @@ public class BusinessCardRecognition {
     public String fax = "";
 
     @JsonPropertyDescription("""
-			電子郵件地址。必須逐字採用文字證據，不可自行修正常見拼法。
+			電子郵件地址。必須逐字採用原始圖片或文字證據，不可自行修正常見拼法。
 			多個值以「、」連接；無法確認時回傳空字串。
 			""")
     public String email = "";
