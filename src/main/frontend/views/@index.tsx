@@ -6,7 +6,7 @@ import { useBlocker, BlockerFunction } from 'react-router';
 
 const MAX_UPLOAD_FILES = 20;
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const SUPPORTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const SUPPORTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf']);
 
 export const config: ViewConfig = {
   menu: { order: 0, icon: 'line-awesome/svg/camera-solid.svg' },
@@ -371,7 +371,7 @@ export default function CameraView() {
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/jpeg,image/png,image/webp,image/gif"
+          accept="image/jpeg,image/png,image/webp,image/gif,application/pdf"
           multiple
           hidden
           onChange={(event) => void uploadImages(event.currentTarget.files)}
@@ -408,7 +408,7 @@ export default function CameraView() {
           onClick={() => fileInputRef.current?.click()}
           className="absolute font-bold text-xl shadow-xs rounded-l p-m"
           style={{ top: '3%', right: '3%' }}>
-          {uploading ? '上傳中…' : '上傳多張圖片'}
+          {uploading ? '上傳中…' : '上傳圖片或 PDF'}
         </Button>
       </div>
 

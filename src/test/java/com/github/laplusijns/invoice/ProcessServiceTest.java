@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -20,28 +19,24 @@ import com.github.laplusijns.card.BusinessCardDTO;
 import com.github.laplusijns.card.BusinessCardRepository;
 import com.github.laplusijns.image.ImageCache;
 import com.github.laplusijns.image.ImageStorageService;
+import com.github.laplusijns.ocr.DocumentInput;
+import com.github.laplusijns.recognition.BusinessCardRecognition;
+import com.github.laplusijns.recognition.BusinessCardRecognitionPipeline;
+import com.github.laplusijns.recognition.RecognitionResult;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 class ProcessServiceTest {
-
-    private final ChatClient chatClient = mock(ChatClient.class, RETURNS_DEEP_STUBS);
+    private final BusinessCardRecognitionPipeline recognitionPipeline = mock(BusinessCardRecognitionPipeline.class);
     private final UserAccountRepository userAccountRepository = mock(UserAccountRepository.class);
     private final BusinessCardRepository businessCardRepository = mock(BusinessCardRepository.class);
     private final BusinessCardChannels channels = mock(BusinessCardChannels.class);
@@ -49,16 +44,14 @@ class ProcessServiceTest {
     private final ImageCache imageCache = mock(ImageCache.class);
     private final UserAccount user = mock(UserAccount.class);
     private final ExecutorService workerExecutor = mock(ExecutorService.class);
-    private final ExecutorService fieldRecognitionExecutor = Executors.newVirtualThreadPerTaskExecutor();
     private final ProcessService service = new ProcessService(
-            chatClient,
+            recognitionPipeline,
             userAccountRepository,
             businessCardRepository,
             channels,
             imageStorageService,
             imageCache,
-            workerExecutor,
-            fieldRecognitionExecutor);
+            workerExecutor);
 
     @BeforeEach
     void authenticate() {
@@ -79,9 +72,6 @@ class ProcessServiceTest {
     void acceptsAndQueuesMultipleImages() throws Exception {
         when(imageStorageService.store(eq(7L), anyString(), eq("image/png"), any(byte[].class)))
                 .thenAnswer(invocation -> "7/" + invocation.getArgument(1) + ".png");
-        when(chatClient.prompt(any(Prompt.class)).call().entity(ProcessService.BusinessCardRecognition.class))
-                .thenReturn(new ProcessService.BusinessCardRecognition());
-        when(businessCardRepository.save(any(BusinessCard.class))).thenAnswer(invocation -> invocation.getArgument(0));
         final String image = "data:image/png;base64,AQID";
 
         final int accepted = service.processImages(List.of(image, image), "session-1");
@@ -94,21 +84,32 @@ class ProcessServiceTest {
     }
 
     @Test
-    void validatesWholeBatchBeforeStoringAnything() {
-        final List<String> images = List.of("data:image/png;base64,AQID", "data:text/plain;base64,AQID");
+    void acceptsPdfAndPreservesItsMimeType() throws Exception {
+        when(imageStorageService.store(eq(7L), anyString(), eq("application/pdf"), any(byte[].class)))
+                .thenReturn("7/document.pdf");
 
-        assertThatThrownBy(() -> service.processImages(images, "session-1"))
+        final int accepted = service.processImages(List.of("data:application/pdf;base64,JVBERg=="), "session-1");
+
+        assertThat(accepted).isEqualTo(1);
+        verify(imageStorageService).store(eq(7L), anyString(), eq("application/pdf"), any(byte[].class));
+    }
+
+    @Test
+    void validatesWholeBatchBeforeStoringAnything() {
+        final List<String> documents = List.of("data:image/png;base64,AQID", "data:text/plain;base64,AQID");
+
+        assertThatThrownBy(() -> service.processImages(documents, "session-1"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Unsupported image type");
+                .hasMessageContaining("Unsupported document type");
 
         verifyNoInteractions(imageStorageService, imageCache, channels);
     }
 
     @Test
-    void rejectsMoreThanTwentyImages() {
-        final List<String> images = Collections.nCopies(21, "data:image/png;base64,AQID");
+    void rejectsMoreThanTwentyDocuments() {
+        final List<String> documents = Collections.nCopies(21, "data:image/png;base64,AQID");
 
-        assertThatThrownBy(() -> service.processImages(images, "session-1"))
+        assertThatThrownBy(() -> service.processImages(documents, "session-1"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("maximum of 20");
 
@@ -125,28 +126,32 @@ class ProcessServiceTest {
         when(businessCardRepository.findAllByUser_IdOrderByCreatedAtDesc(7L)).thenReturn(List.of(card));
         when(businessCardRepository.save(card)).thenReturn(card);
         when(imageStorageService.read("7/card-image.png")).thenReturn(new byte[] {1, 2, 3});
-        when(chatClient.prompt(any(Prompt.class)).call().entity(ProcessService.BusinessCardRecognition.class))
-                .thenReturn(completeRecognition());
+        when(recognitionPipeline.recognize(any(DocumentInput.class))).thenReturn(result(completeRecognition()));
         final ArgumentCaptor<Runnable> workerTask = ArgumentCaptor.forClass(Runnable.class);
 
         service.reRecognize(42L, "session-1");
 
         verify(workerExecutor).submit(workerTask.capture());
-        assertThat(service.data()).singleElement().extracting(BusinessCardDTO::status).isEqualTo("重新辨識中");
+        assertThat(service.data())
+                .singleElement()
+                .extracting(BusinessCardDTO::status)
+                .isEqualTo("重新辨識中");
 
         workerTask.getValue().run();
 
-        assertThat(service.data()).singleElement().extracting(BusinessCardDTO::status).isEqualTo("辨識完成");
+        assertThat(service.data())
+                .singleElement()
+                .extracting(BusinessCardDTO::status)
+                .isEqualTo("辨識完成");
         final ArgumentCaptor<BusinessCardDTO> updates = ArgumentCaptor.forClass(BusinessCardDTO.class);
         verify(channels, times(2)).emit(eq("session-1"), updates.capture());
-        assertThat(updates.getAllValues()).extracting(BusinessCardDTO::status)
-                .containsExactly("重新辨識中", "辨識完成");
+        assertThat(updates.getAllValues()).extracting(BusinessCardDTO::status).containsExactly("重新辨識中", "辨識完成");
     }
 
     @Test
     void springSelectsProductionConstructor() {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
-            context.getBeanFactory().registerSingleton("chatClient", chatClient);
+            context.getBeanFactory().registerSingleton("recognitionPipeline", recognitionPipeline);
             context.getBeanFactory().registerSingleton("userAccountRepository", userAccountRepository);
             context.getBeanFactory().registerSingleton("businessCardRepository", businessCardRepository);
             context.getBeanFactory().registerSingleton("channels", channels);
@@ -160,80 +165,41 @@ class ProcessServiceTest {
     }
 
     @Test
-    void verifiesMultipleMissingFieldsInParallelAndKeepsConfirmedEmptyFieldsBlank() {
-        final ExecutorService focusedExecutor = Executors.newVirtualThreadPerTaskExecutor();
-        final CyclicBarrier parallelCallBarrier = new CyclicBarrier(2);
-        final Set<String> requestedFields = ConcurrentHashMap.newKeySet();
-        final ProcessService focusedService = new ProcessService(
-                chatClient,
-                userAccountRepository,
-                businessCardRepository,
-                channels,
-                imageStorageService,
-                imageCache,
-                mock(ExecutorService.class),
-                focusedExecutor) {
-            @Override
-            String recognizeField(
-                    final RecognitionField field, final String mimeType, final byte[] imageBytes) {
-                requestedFields.add(field.apiName());
-                try {
-                    parallelCallBarrier.await(2, TimeUnit.SECONDS);
-                } catch (Exception exception) {
-                    throw new IllegalStateException("Focused OCR calls did not run in parallel", exception);
-                }
-                return field.apiName().equals("email") ? "  alice@example.com  " : "";
-            }
-        };
-        final ProcessService.BusinessCardRecognition initial = completeRecognition();
-        initial.email = " ";
-        initial.jobTitle = null;
+    void delegatesRecognitionToLayeredPipeline() {
+        when(recognitionPipeline.recognize(any(DocumentInput.class))).thenReturn(result(completeRecognition()));
 
-        try {
-            final ProcessService.BusinessCardRecognition verified =
-                    focusedService.verifyMissingFields(initial, "image/png", new byte[] {1, 2, 3});
+        final BusinessCardRecognition recognized = service.recognizeDocument("image/png", new byte[] {1, 2, 3});
 
-            assertThat(requestedFields).containsExactlyInAnyOrder("email", "jobTitle");
-            assertThat(verified.email).isEqualTo("alice@example.com");
-            assertThat(verified.jobTitle).isEmpty();
-            assertThat(verified.name).isEqualTo("王小明");
-        } finally {
-            focusedService.shutdownExecutors();
-        }
-    }
-
-    @Test
-    void skipsFocusedRecognitionWhenEveryFieldAlreadyHasAValue() {
-        final ProcessService.BusinessCardRecognition initial = completeRecognition();
-
-        final ProcessService.BusinessCardRecognition verified =
-                service.verifyMissingFields(initial, "image/png", new byte[] {1, 2, 3});
-
-        assertThat(verified).isSameAs(initial);
-        verifyNoInteractions(chatClient);
+        assertThat(recognized.name).isEqualTo("王小明");
+        final ArgumentCaptor<DocumentInput> input = ArgumentCaptor.forClass(DocumentInput.class);
+        verify(recognitionPipeline).recognize(input.capture());
+        assertThat(input.getValue().mimeType()).isEqualTo("image/png");
     }
 
     @Test
     void formatsNotesWithOnlyBusinessNumberStockCodeAndCompanyWebsite() {
-        final ProcessService.BusinessCardRecognition result = new ProcessService.BusinessCardRecognition();
-        result.businessNumber = " 12345678 ";
-        result.stockCode = "2330";
-        result.companyWebsite = "https://example.com";
+        final BusinessCardRecognition recognition = new BusinessCardRecognition();
+        recognition.businessNumber = " 12345678 ";
+        recognition.stockCode = "2330";
+        recognition.companyWebsite = "https://example.com";
 
-        assertThat(ProcessService.formatNotes(result))
-                .isEqualTo("統編：12345678、股票代號：2330、公司網址：https://example.com");
+        assertThat(ProcessService.formatNotes(recognition)).isEqualTo("統編：12345678、股票代號：2330、公司網址：https://example.com");
     }
 
     @Test
     void omitsMissingAllowedValuesFromNotes() {
-        final ProcessService.BusinessCardRecognition result = new ProcessService.BusinessCardRecognition();
-        result.companyWebsite = "https://example.com";
+        final BusinessCardRecognition recognition = new BusinessCardRecognition();
+        recognition.companyWebsite = "https://example.com";
 
-        assertThat(ProcessService.formatNotes(result)).isEqualTo("公司網址：https://example.com");
+        assertThat(ProcessService.formatNotes(recognition)).isEqualTo("公司網址：https://example.com");
     }
 
-    private static ProcessService.BusinessCardRecognition completeRecognition() {
-        final ProcessService.BusinessCardRecognition result = new ProcessService.BusinessCardRecognition();
+    private static RecognitionResult result(final BusinessCardRecognition recognition) {
+        return new RecognitionResult(recognition, null, null, null, false, List.of());
+    }
+
+    private static BusinessCardRecognition completeRecognition() {
+        final BusinessCardRecognition result = new BusinessCardRecognition();
         result.companyName = "範例股份有限公司";
         result.name = "王小明";
         result.jobTitle = "業務部經理";

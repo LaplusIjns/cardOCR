@@ -1,67 +1,66 @@
-# Custom project from Hilla
+# cardOCR
 
-This project can be used as a starting point to create your own Hilla application with Spring Boot.
-It contains all the necessary configuration and some placeholder files to get you started.
+名片與文件辨識系統，採用「Java 主應用程式 + PaddleX/PaddleOCR 服務 + OpenAI API」分層架構。
 
-## Running the application
+## 處理流程
 
-The project is a standard Maven project. To run it from the command line,
-type `mvnw` (Windows), or `./mvnw` (Mac & Linux), then open
-http://localhost:8080 in your browser.
-
-You can also import the project to your IDE of choice as you would with any
-Maven project.
-
-## Deploying to Production
-
-To create a production build, call `mvnw clean package -Pproduction` (Windows),
-or `./mvnw clean package -Pproduction` (Mac & Linux).
-This will build a JAR file with all the dependencies and front-end resources,
-ready to be deployed. The file can be found in the `target` folder after the build completes.
-
-Once the JAR file is built, you can run it using
-`java -jar target/myapp-1.0-SNAPSHOT.jar` (NOTE, replace
-`myapp-1.0-SNAPSHOT.jar` with the name of your jar).
-
-## Project structure
-
-<table style="width:100%; text-align: left;">
-  <tr><th>Directory</th><th>Description</th></tr>
-  <tr><td><code>src/main/frontend/</code></td><td>Client-side source directory</td></tr>
-  <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<code>index.html</code></td><td>HTML template</td></tr>
-  <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<code>index.ts</code></td><td>Frontend 
-entrypoint, bootstraps a React application</td></tr>
-  <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<code>routes.tsx</code></td><td>React Router routes definition</td></tr>
-  <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<code>MainLayout.tsx</code></td><td>Main 
-layout component, contains the navigation menu, uses <a href="https://hilla.dev/docs/react/components/app-layout">
-App Layout</a></td></tr>
-  <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<code>views/</code></td><td>UI view 
-components</td></tr>
-  <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<code>themes/</code></td><td>Custom  
-CSS styles</td></tr>
-  <tr><td><code>src/main/java/&lt;groupId&gt;/</code></td><td>Server-side 
-source directory, contains the server-side Java views</td></tr>
-  <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<code>Application.java</code></td><td>Server entry-point</td></tr>
-</table>
-
-## Useful links
-
-- Read the documentation at [hilla.dev/docs](https://hilla.dev/docs/).
-- Ask questions on [Stack Overflow](https://stackoverflow.com/questions/tagged/vaadin) or join our [Forum](https://vaadin.com/forum).
-- Report issues, create pull requests in [GitHub](https://github.com/vaadin/hilla).
-
-
-## Deploying using Docker
-
-To build the Dockerized version of the project, run
-
-```
-mvn clean package -Pproduction
-docker build . -t invoice:latest
+```text
+圖片 / PDF
+  -> Spring Boot / Hilla 主應用程式
+  -> PaddleX POST http://127.0.0.1:16601/ocr
+  -> OCR Block（文字、Bounding Box、Confidence、頁碼）
+  -> Java Layout Reconstruction
+  -> Java Semantic Normalization + Rule Engine
+  -> 無歧義：直接驗證並產生 DTO
+  -> 有歧義：OCR 上下文 + 必要的局部裁圖 -> OpenAI Responses API
+  -> Structured Output -> Java DTO -> 正規化 -> SQLite / 後續系統
 ```
 
-Once the Docker image is correctly built, you can test it locally using
+OCR block 不是業務欄位。例如 PaddleOCR 分別回傳同一行的 `F` 與 `03-12345678` 時，Java 會先依座標重建為 `F | 03-12345678`，再由規則引擎判定為 Fax。只有低信心值、未知標籤、未分類電話或其他無法由規則確定的文字才會呼叫 OpenAI。
 
+詳細的元件職責與資料合約見 [架構說明](docs/architecture.md)。
+
+## 啟動 PaddleX OCR Service
+
+安裝 PaddleX OCR 與 serving plugin 後啟動官方 OCR pipeline：
+
+```bash
+python -m pip install "paddlex[ocr]"
+paddlex --install serving
+paddlex --serve --pipeline OCR --host 127.0.0.1 --port 16601
 ```
-docker run -p 8080:8080 invoice:latest
+
+Java 預設呼叫 `http://127.0.0.1:16601/ocr`。服務需回傳 PaddleX 官方 serving 格式：`result.ocrResults[*].prunedResult`，其 `rec_texts`、`rec_scores`、`rec_boxes` 或 `rec_polys` 會映射成 Java OCR domain model。PDF 會以 `fileType: 0` 傳送，圖片則為 `fileType: 1`。
+
+## 設定
+
+可透過 Spring properties 或等價環境設定調整：
+
+| Property | 預設值 | 用途 |
+| --- | --- | --- |
+| `card-ocr.paddlex.base-url` | `http://127.0.0.1:16601` | PaddleX 服務位址 |
+| `card-ocr.paddlex.endpoint` | `/ocr` | OCR endpoint |
+| `card-ocr.paddlex.return-page-images` | `true` | 取得頁面影像供局部裁圖；可關閉以減少本機傳輸 |
+| `card-ocr.rules.deterministic-confidence` | `0.85` | Java 規則可直接採信的最低 OCR confidence |
+| `card-ocr.openai.base-url` | `spring.ai.openai.base-url` 或官方 API | OpenAI API base URL |
+| `card-ocr.openai.api-key` | `spring.ai.openai.api-key` | OpenAI API key |
+| `card-ocr.openai.model` | `spring.ai.openai.chat.options.model` 或 `gpt-4o-mini` | 支援 image input 與 Structured Outputs 的模型 |
+| `card-ocr.image-storage-path` | `./uploads` | 原始圖片/PDF 儲存位置 |
+
+OpenAI key 只有在文件存在語意歧義、確實需要模型時才是必要的。OpenAI 請求使用 Responses API 的 JSON Schema Structured Output；Java 會再次驗證欄位格式，且模型不能覆寫 Java 規則已確定的值。
+
+## 執行
+
+需要 Java 25：
+
+```powershell
+.\mvnw.cmd spring-boot:run
 ```
+
+執行測試：
+
+```powershell
+.\mvnw.cmd test
+```
+
+前端支援 JPEG、PNG、WebP、GIF 與 PDF，每個檔案上限 10 MB，一次最多 20 個檔案。
