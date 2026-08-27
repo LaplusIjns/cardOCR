@@ -59,7 +59,29 @@ export default function ResultView() {
   const [editingCard, setEditingCard] = useState<BusinessCardDTO | null>(null);
   const [saving, setSaving] = useState(false);
   const subscriptionRef = useRef<any>(null);
-  const sessionIdRef = useRef('');
+  const subscriptionPromiseRef = useRef<Promise<string> | null>(null);
+  const mountedRef = useRef(false);
+
+  const applyCardUpdate = useCallback((update: BusinessCardDTO) => {
+    setCards((previous) => previous.some((item) => item.key === update.key)
+      ? previous.map((item) => item.key === update.key ? update : item)
+      : [update, ...previous]);
+  }, []);
+
+  const ensureSubscription = useCallback(() => {
+    if (!subscriptionPromiseRef.current) {
+      subscriptionPromiseRef.current = ProcessService.jsessionId().catch((error) => {
+        subscriptionPromiseRef.current = null;
+        throw error;
+      });
+    }
+    return subscriptionPromiseRef.current.then((sessionId: string) => {
+      if (mountedRef.current) {
+        subscriptionRef.current ??= ProcessService.cardSubscription(sessionId).onNext(applyCardUpdate);
+      }
+      return sessionId;
+    });
+  }, [applyCardUpdate]);
 
   useEffect(() => {
     (globalThis as any).setSelectedPreview = (imageUrl: string) => {
@@ -72,29 +94,29 @@ export default function ResultView() {
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     ProcessService.data().then((items) => setCards((items ?? []).filter((item): item is BusinessCardDTO => item != null)));
-    ProcessService.jsessionId().then((sessionId: string) => {
-      sessionIdRef.current = sessionId;
-      subscriptionRef.current = ProcessService.cardSubscription(sessionId).onNext((update: BusinessCardDTO) => {
-        setCards((previous) => previous.some((item) => item.key === update.key)
-          ? previous.map((item) => item.key === update.key ? update : item)
-          : [update, ...previous]);
-      });
-    });
-    return () => subscriptionRef.current?.cancel();
-  }, []);
+    void ensureSubscription().catch((error) => console.error('無法訂閱名片辨識更新', error));
+    return () => {
+      mountedRef.current = false;
+      subscriptionRef.current?.cancel();
+      subscriptionRef.current = null;
+    };
+  }, [ensureSubscription]);
 
   const handleDelete = useCallback((key: string) => setCards((previous) => previous.filter((card) => card.key !== key)), []);
   const handleRecognize = useCallback(async (item: BusinessCardDTO) => {
     if (item.id == null || !confirm(`重新辨識將覆蓋 ${item.name || '這張名片'} 的目前資料，確定繼續嗎？`)) return;
+    setCards((previous) => previous.map((card) => card.key === item.key ? { ...card, status: '重新辨識中' } : card));
     try {
-      await ProcessService.reRecognize(item.id, sessionIdRef.current);
-      setCards((previous) => previous.map((card) => card.key === item.key ? { ...card, status: '重新辨識中' } : card));
+      await ProcessService.reRecognize(item.id, await ensureSubscription());
     } catch (error) {
       console.error(error);
+      setCards((previous) => previous.map((card) =>
+        card.key === item.key && card.status === '重新辨識中' ? { ...card, status: item.status } : card));
       Notification.show('無法重新辨識', { theme: 'error', position: 'top-center' });
     }
-  }, []);
+  }, [ensureSubscription]);
   const actionRenderer = useCallback(({ item }: { item: BusinessCardDTO }) =>
     <ActionRenderer item={item} onDelete={handleDelete} onEdit={setEditingCard} onRecognize={handleRecognize} />,
   [handleDelete, handleRecognize]);
