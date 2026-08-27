@@ -45,26 +45,34 @@ public class ProcessService {
 			"image/gif");
 	private static final Logger log = LoggerFactory.getLogger(ProcessService.class);
 	private static final String AI_PROMPT = """
-			你是一個專業的名片 OCR 助理。請辨識圖片中的名片資訊，並只輸出 JSON，不要輸出 Markdown 或說明文字。
-			JSON 欄位必須完全如下：
-			{
-			  "companyName": "公司名稱",
-			  "name": "姓名",
-			  "jobTitle": "職稱",
-			  "telephone": "電話",
-			  "mobilePhone": "行動電話",
-			  "fax": "傳真",
-			  "email": "EMAIL",
-			  "address": "地址",
-			  "notes": "備註"
-			}
-			姓名中文優先、如果有英文名以（）附在中文後面
-			每個欄位可能有一或多個值、有就是用"、"串接
-			如果有詳細部門也填在職稱
-			明確有 f、fax、傳真才會是傳真的值
-			看不到或無法確認的欄位請回傳空字串。保留電話分機、國碼及原有標點。
-			名片上有統一編號（統編）、公司股票代號、公司網址等資訊，請完整寫入 notes。不可臆測不存在的內容。
-			""";
+						你是專業的繁體中文名片辨識系統。
+
+			任務：
+			仔細閱讀圖片中的所有可見文字，辨識名片持有人及公司資訊。
+			先辨識文字內容與其版面關係，再判斷各文字所屬欄位。
+
+			辨識原則：
+			1. 僅輸出圖片中明確可見的資訊，禁止猜測、補字、推論不存在的內容。
+			2. 圖片可能旋轉、傾斜或方向不正，請先判斷正確閱讀方向後再辨識。
+			3. 繁體中文必須保留原字，不要自行轉為簡體。
+			4. 姓名以中文姓名優先；若同時有英文姓名，格式為「中文姓名（英文姓名）」。
+			5. 職稱需包含姓名附近明確屬於該人的部門、單位、職位，例如「資訊處 資深技術處長」。
+			6. 不可把公司名稱、產品名稱、部門介紹誤認為職稱。
+			7. 電話類型必須依名片上的標示判斷：
+			   - M / Mobile / 行動 / 手機 → mobilePhone
+			   - T / Tel / TEL / 電話 → telephone
+			   - F / Fax / FAX / 傳真 → fax
+			   沒有 F、Fax、FAX 或「傳真」標示，不得填入 fax。
+			8. 保留電話中的國碼、括號、連字號、空白與分機。
+			9. E / Email / E-mail 對應 email。
+			10. A / Addr / Address / 地址對應 address。
+			11. 公司網址、統一編號、統編、股票代號及其他無專屬欄位的重要資訊放入 notes。
+			12. 同一欄位有多個值時，以「、」連接。
+			13. 完全看不清楚或無法可靠判斷的值回傳空字串，不要猜測。
+			14. 對容易混淆的字元特別謹慎，例如：
+			    0/O、1/I/l、5/S、8/B、2/Z、rn/m。
+			15. Email、網址、電話及統編必須逐字核對，不要依常見格式自動修正。
+						""";
 
 	private final ChatClient chatClient;
 	private final UserAccountRepository userAccountRepository;
@@ -212,10 +220,11 @@ public class ProcessService {
 	private void recognize(final UserAccount user, final String imageId, final String imagePath, final String mimeType,
 			final byte[] imageBytes, final String sessionId) {
 		try {
-			BusinessCardRecognition result = chatClient
-					.prompt().system(AI_PROMPT).user(u -> u.text("請辨識這張名片。")
-							.media(MimeTypeUtils.parseMimeType(mimeType), new ByteArrayResource(imageBytes)))
-					.call().entity(BusinessCardRecognition.class);
+			BusinessCardRecognition result = chatClient.prompt().system(AI_PROMPT)
+					.user(u -> u.text("請辨識這張名片。").media(MimeTypeUtils.parseMimeType(mimeType),
+							new ByteArrayResource(imageBytes)))
+					.call()
+					.entity(BusinessCardRecognition.class, spec -> spec.useProviderStructuredOutput().validateSchema());
 			if (result == null) {
 				result = new BusinessCardRecognition();
 			}
