@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
@@ -112,6 +113,34 @@ class ProcessServiceTest {
                 .hasMessageContaining("maximum of 20");
 
         verifyNoInteractions(imageStorageService, imageCache, channels);
+    }
+
+    @Test
+    void exposesReRecognitionProgressUntilTheWorkerSavesTheResult() throws Exception {
+        final BusinessCard card = mock(BusinessCard.class);
+        when(card.getId()).thenReturn(42L);
+        when(card.getImageId()).thenReturn("card-image");
+        when(card.getImagePath()).thenReturn("7/card-image.png");
+        when(businessCardRepository.findByIdAndUser_Id(42L, 7L)).thenReturn(Optional.of(card));
+        when(businessCardRepository.findAllByUser_IdOrderByCreatedAtDesc(7L)).thenReturn(List.of(card));
+        when(businessCardRepository.save(card)).thenReturn(card);
+        when(imageStorageService.read("7/card-image.png")).thenReturn(new byte[] {1, 2, 3});
+        when(chatClient.prompt(any(Prompt.class)).call().entity(ProcessService.BusinessCardRecognition.class))
+                .thenReturn(completeRecognition());
+        final ArgumentCaptor<Runnable> workerTask = ArgumentCaptor.forClass(Runnable.class);
+
+        service.reRecognize(42L, "session-1");
+
+        verify(workerExecutor).submit(workerTask.capture());
+        assertThat(service.data()).singleElement().extracting(BusinessCardDTO::status).isEqualTo("重新辨識中");
+
+        workerTask.getValue().run();
+
+        assertThat(service.data()).singleElement().extracting(BusinessCardDTO::status).isEqualTo("辨識完成");
+        final ArgumentCaptor<BusinessCardDTO> updates = ArgumentCaptor.forClass(BusinessCardDTO.class);
+        verify(channels, times(2)).emit(eq("session-1"), updates.capture());
+        assertThat(updates.getAllValues()).extracting(BusinessCardDTO::status)
+                .containsExactly("重新辨識中", "辨識完成");
     }
 
     @Test

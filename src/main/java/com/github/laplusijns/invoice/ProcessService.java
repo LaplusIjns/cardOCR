@@ -6,9 +6,11 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.BiConsumer;
@@ -48,6 +50,8 @@ import reactor.core.publisher.Flux;
 public class ProcessService {
 	private static final int MAX_BATCH_IMAGES = 20;
 	private static final int MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+	private static final String RE_RECOGNIZING = "重新辨識中";
+	private static final String RE_RECOGNITION_FAILED = "重新辨識失敗";
 	private static final Set<String> SUPPORTED_IMAGE_TYPES = Set.of("image/jpeg", "image/png", "image/webp",
 			"image/gif");
 	private static final Logger log = LoggerFactory.getLogger(ProcessService.class);
@@ -154,6 +158,7 @@ public class ProcessService {
 	private final ImageCache imageCache;
 	private final ExecutorService workerExecutor;
 	private final ExecutorService fieldRecognitionExecutor;
+	private final Map<Long, String> reRecognitionStatuses = new ConcurrentHashMap<>();
 
 	@Autowired
 	public ProcessService(final ChatClient chatClient, final UserAccountRepository userAccountRepository,
@@ -197,7 +202,7 @@ public class ProcessService {
 	public List<BusinessCardDTO> data() {
 		final UserAccount user = currentUser();
 		return businessCardRepository.findAllByUser_IdOrderByCreatedAtDesc(user.getId()).stream()
-				.map(BusinessCardDTO::from).toList();
+				.map(this::toDto).toList();
 	}
 
 	public void process(final String base64Image, final String sessionId) {
@@ -274,6 +279,7 @@ public class ProcessService {
 	public void deleteCard(final Long id) {
 		final UserAccount user = currentUser();
 		businessCardRepository.findByIdAndUser_Id(id, user.getId()).ifPresent(card -> {
+			reRecognitionStatuses.remove(id);
 			businessCardRepository.delete(card);
 			imageCache.delete(card.getImageId());
 			try {
@@ -289,7 +295,7 @@ public class ProcessService {
 		final BusinessCard card = businessCardRepository.findByIdAndUser_Id(id, user.getId())
 				.orElseThrow(() -> new IllegalArgumentException("Business card not found"));
 		apply(card, request);
-		return BusinessCardDTO.from(businessCardRepository.save(card));
+		return toDto(businessCardRepository.save(card));
 	}
 
 	public void reRecognize(final Long id, final String sessionId) {
@@ -302,9 +308,18 @@ public class ProcessService {
 		} catch (IOException exception) {
 			throw new IllegalStateException("Unable to read stored image", exception);
 		}
-		channels.emit(sessionId, BusinessCardDTO.from(card, "重新辨識中"));
-		workerExecutor.submit(
-				() -> recognizeExisting(user.getId(), id, mimeType(card.getImagePath()), imageBytes, sessionId));
+		if (RE_RECOGNIZING.equals(reRecognitionStatuses.put(id, RE_RECOGNIZING))) {
+			channels.emit(sessionId, BusinessCardDTO.from(card, RE_RECOGNIZING));
+			return;
+		}
+		channels.emit(sessionId, BusinessCardDTO.from(card, RE_RECOGNIZING));
+		try {
+			workerExecutor.submit(
+					() -> recognizeExisting(user.getId(), id, mimeType(card.getImagePath()), imageBytes, sessionId));
+		} catch (RuntimeException exception) {
+			reRecognitionStatuses.remove(id, RE_RECOGNIZING);
+			throw exception;
+		}
 	}
 
 	private void recognize(final UserAccount user, final String imageId, final String imagePath, final String mimeType,
@@ -336,12 +351,22 @@ public class ProcessService {
 					.orElseThrow(() -> new IllegalArgumentException("Business card not found"));
 			final BusinessCardRecognition result = recognizeImage(mimeType, imageBytes);
 			apply(card, result);
-			channels.emit(sessionId, BusinessCardDTO.from(businessCardRepository.save(card)));
+			final BusinessCard savedCard = businessCardRepository.save(card);
+			reRecognitionStatuses.remove(cardId);
+			channels.emit(sessionId, BusinessCardDTO.from(savedCard));
 		} catch (Exception exception) {
 			log.error("Business card re-recognition failed", exception);
 			businessCardRepository.findByIdAndUser_Id(cardId, userId)
-					.ifPresent(card -> channels.emit(sessionId, BusinessCardDTO.from(card, "重新辨識失敗")));
+					.ifPresentOrElse(card -> {
+						reRecognitionStatuses.put(cardId, RE_RECOGNITION_FAILED);
+						channels.emit(sessionId, BusinessCardDTO.from(card, RE_RECOGNITION_FAILED));
+					}, () -> reRecognitionStatuses.remove(cardId));
 		}
+	}
+
+	private BusinessCardDTO toDto(final BusinessCard card) {
+		final String status = reRecognitionStatuses.get(card.getId());
+		return status == null ? BusinessCardDTO.from(card) : BusinessCardDTO.from(card, status);
 	}
 
 	BusinessCardRecognition recognizeImage(final String mimeType, final byte[] imageBytes) {

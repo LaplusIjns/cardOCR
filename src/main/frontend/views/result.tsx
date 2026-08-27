@@ -10,6 +10,7 @@ import {
   TextArea,
   TextField,
 } from '@vaadin/react-components';
+import { ActionOnLostSubscription, type Subscription } from '@vaadin/hilla-frontend';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ProcessService } from 'Frontend/generated/endpoints';
 import BusinessCardDTO from 'Frontend/generated/com/github/laplusijns/card/BusinessCardDTO';
@@ -50,6 +51,9 @@ const ActionRenderer = memo(function ActionRenderer({ item, onDelete, onEdit, on
 
 type EditableField = 'companyName' | 'name' | 'jobTitle' | 'telephone' | 'mobilePhone' | 'fax' | 'email' | 'address' | 'notes';
 type SearchField = 'all' | EditableField | 'status';
+
+const RE_RECOGNIZING = '重新辨識中';
+const RECOGNITION_REFRESH_INTERVAL_MS = 2000;
 
 const fields: ReadonlyArray<{ key: EditableField; label: string; area?: boolean }> = [
   { key: 'companyName', label: '公司名稱' },
@@ -107,7 +111,8 @@ export default function ResultView() {
   const [previewRotation, setPreviewRotation] = useState(0);
   const [editingCard, setEditingCard] = useState<BusinessCardDTO | null>(null);
   const [saving, setSaving] = useState(false);
-  const subscriptionRef = useRef<any>(null);
+  const [recognitionPollIds, setRecognitionPollIds] = useState<Set<number>>(() => new Set());
+  const subscriptionRef = useRef<Subscription<BusinessCardDTO> | null>(null);
   const subscriptionPromiseRef = useRef<Promise<string> | null>(null);
   const mountedRef = useRef(false);
 
@@ -120,6 +125,16 @@ export default function ResultView() {
     setCards((previous) => previous.some((item) => item.key === update.key)
       ? previous.map((item) => item.key === update.key ? update : item)
       : [update, ...previous]);
+    if (update.id != null) {
+      setRecognitionPollIds((previous) => {
+        const shouldPoll = update.status === RE_RECOGNIZING;
+        if (previous.has(update.id!) === shouldPoll) return previous;
+        const next = new Set(previous);
+        if (shouldPoll) next.add(update.id!);
+        else next.delete(update.id!);
+        return next;
+      });
+    }
   }, []);
 
   const ensureSubscription = useCallback(() => {
@@ -131,7 +146,15 @@ export default function ResultView() {
     }
     return subscriptionPromiseRef.current.then((sessionId: string) => {
       if (mountedRef.current) {
-        subscriptionRef.current ??= ProcessService.cardSubscription(sessionId).onNext(applyCardUpdate);
+        if (!subscriptionRef.current) {
+          subscriptionRef.current = ProcessService.cardSubscription(sessionId)
+            .onNext(applyCardUpdate)
+            .onSubscriptionLost(() => ActionOnLostSubscription.RESUBSCRIBE)
+            .onError((message) => {
+              console.error('名片辨識更新訂閱發生錯誤', message);
+              subscriptionRef.current = null;
+            });
+        }
       }
       return sessionId;
     });
@@ -149,7 +172,14 @@ export default function ResultView() {
 
   useEffect(() => {
     mountedRef.current = true;
-    ProcessService.data().then((items) => setCards((items ?? []).filter((item): item is BusinessCardDTO => item != null)));
+    ProcessService.data().then((items) => {
+      if (!mountedRef.current) return;
+      const loadedCards = (items ?? []).filter((item): item is BusinessCardDTO => item != null);
+      setCards(loadedCards);
+      setRecognitionPollIds(new Set(loadedCards
+        .filter((item) => item.id != null && item.status === RE_RECOGNIZING)
+        .map((item) => item.id!)));
+    });
     void ensureSubscription().catch((error) => console.error('無法訂閱名片辨識更新', error));
     return () => {
       mountedRef.current = false;
@@ -158,12 +188,48 @@ export default function ResultView() {
     };
   }, [ensureSubscription]);
 
+  useEffect(() => {
+    if (recognitionPollIds.size === 0) return;
+    let active = true;
+    let refreshTimeout: ReturnType<typeof setTimeout> | undefined;
+
+    const refreshRecognizingCards = async () => {
+      try {
+        const items = await ProcessService.data();
+        if (!active || !items) return;
+        const updates = items.filter((item): item is BusinessCardDTO =>
+          item != null && item.id != null && recognitionPollIds.has(item.id));
+        const updatesById = new Map(updates.map((item) => [item.id!, item]));
+        setCards((previous) => previous.map((card) =>
+          card.id != null && updatesById.has(card.id) ? updatesById.get(card.id)! : card));
+        setRecognitionPollIds((previous) => {
+          const next = new Set(previous);
+          previous.forEach((id) => {
+            if (updatesById.get(id)?.status !== RE_RECOGNIZING) next.delete(id);
+          });
+          return next.size === previous.size ? previous : next;
+        });
+      } catch (error) {
+        console.error('無法同步重新辨識結果', error);
+      } finally {
+        if (active) refreshTimeout = globalThis.setTimeout(refreshRecognizingCards, RECOGNITION_REFRESH_INTERVAL_MS);
+      }
+    };
+
+    refreshTimeout = globalThis.setTimeout(refreshRecognizingCards, RECOGNITION_REFRESH_INTERVAL_MS);
+    return () => {
+      active = false;
+      if (refreshTimeout) clearTimeout(refreshTimeout);
+    };
+  }, [recognitionPollIds]);
+
   const handleDelete = useCallback((key: string) => setCards((previous) => previous.filter((card) => card.key !== key)), []);
   const handleRecognize = useCallback(async (item: BusinessCardDTO) => {
     if (item.id == null || !confirm(`重新辨識將覆蓋 ${item.name || '這張名片'} 的目前資料，確定繼續嗎？`)) return;
     setCards((previous) => previous.map((card) => card.key === item.key ? { ...card, status: '重新辨識中' } : card));
     try {
       await ProcessService.reRecognize(item.id, await ensureSubscription());
+      setRecognitionPollIds((previous) => new Set(previous).add(item.id!));
     } catch (error) {
       console.error(error);
       setCards((previous) => previous.map((card) =>
