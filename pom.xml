@@ -179,8 +179,6 @@
 						<prettier>
 							<prettierVersion>3.9.6</prettierVersion>
 							<configFile>.prettierrc.json</configFile>
-							<nodeExecutable>
-								C:\Users\jack1\.vaadin\node-v24.13.0\node.exe</nodeExecutable>
 						</prettier>
 					</typescript>
 				</configuration>

@@ -9,6 +9,27 @@ The project is a standard Maven project. To run it from the command line,
 type `mvnw` (Windows), or `./mvnw` (Mac & Linux), then open
 http://localhost:8080 in your browser.
 
+## Qwen AI configuration
+
+Business-card recognition uses a two-stage pipeline:
+
+1. `qwen-vl-max` reads the image and produces complete OCR and layout evidence.
+2. `qwen3.8-max` parses that evidence into the application's structured business-card fields.
+
+Both clients use Alibaba Cloud Model Studio's OpenAI-compatible endpoint. Configure credentials outside the
+repository; for example, in PowerShell:
+
+```powershell
+$env:SPRING_AI_OPENAI_BASE_URL = 'https://<workspace-id>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1'
+$env:SPRING_AI_OPENAI_API_KEY = $env:DASHSCOPE_API_KEY
+$env:CARD_OCR_AI_VISION_MODEL = 'qwen-vl-max'
+$env:CARD_OCR_AI_PARSER_MODEL = 'qwen3.8-max'
+```
+
+The model variables are optional and show the defaults. The application also accepts the equivalent properties
+`card-ocr.ai.base-url`, `card-ocr.ai.api-key`, `card-ocr.ai.vision.model`, and `card-ocr.ai.parser.model`.
+The intermediate OCR evidence is passed in memory to the parser and is not persisted or logged by the AI clients.
+
 You can also import the project to your IDE of choice as you would with any
 Maven project.
 
