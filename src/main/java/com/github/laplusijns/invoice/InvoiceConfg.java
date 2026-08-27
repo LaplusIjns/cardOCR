@@ -22,7 +22,7 @@ public class InvoiceConfg {
 
 	public InvoiceConfg(@Value("${card-ocr.ai.base-url:${spring.ai.openai.base-url}}") final String baseUrl,
 			@Value("${card-ocr.ai.api-key:${spring.ai.openai.api-key:}}") final String apiKey,
-			@Value("${card-ocr.ai.vision.model:qwen-vl-max}") final String visionModel,
+			@Value("${card-ocr.ai.vision.model:qwen3-vl-plus}") final String visionModel,
 			@Value("${card-ocr.ai.parser.model:qwen3.8-max}") final String parserModel) {
 		this.baseUrl = baseUrl;
 		this.apiKey = apiKey;

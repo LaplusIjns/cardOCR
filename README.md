@@ -13,7 +13,7 @@ http://localhost:8080 in your browser.
 
 Business-card recognition uses a two-stage pipeline:
 
-1. `qwen-vl-max` reads the image and produces complete OCR and layout evidence.
+1. `qwen3-vl-plus` reads the image and produces complete OCR and layout evidence.
 2. `qwen3.8-max` parses that evidence into the application's structured business-card fields.
 
 Both clients use Alibaba Cloud Model Studio's OpenAI-compatible endpoint. Configure credentials outside the
@@ -22,7 +22,7 @@ repository; for example, in PowerShell:
 ```powershell
 $env:SPRING_AI_OPENAI_BASE_URL = 'https://<workspace-id>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1'
 $env:SPRING_AI_OPENAI_API_KEY = $env:DASHSCOPE_API_KEY
-$env:CARD_OCR_AI_VISION_MODEL = 'qwen-vl-max'
+$env:CARD_OCR_AI_VISION_MODEL = 'qwen3-vl-plus'
 $env:CARD_OCR_AI_PARSER_MODEL = 'qwen3.8-max'
 ```
 

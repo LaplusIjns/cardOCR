@@ -25,7 +25,7 @@ class InvoiceConfgTest {
             final OpenAiChatModel visionModel = context.getBean("visionChatModel", OpenAiChatModel.class);
             final OpenAiChatModel parserModel = context.getBean("parserChatModel", OpenAiChatModel.class);
             assertThat(visionModel).isNotSameAs(parserModel);
-            assertThat(visionModel.getOptions().getModel()).isEqualTo("qwen-vl-max");
+            assertThat(visionModel.getOptions().getModel()).isEqualTo("qwen3-vl-plus");
             assertThat(parserModel.getOptions().getModel()).isEqualTo("qwen3.8-max");
             assertThat(context.getBean("visionChatClient", ChatClient.class))
                     .isNotSameAs(context.getBean("parserChatClient", ChatClient.class));
