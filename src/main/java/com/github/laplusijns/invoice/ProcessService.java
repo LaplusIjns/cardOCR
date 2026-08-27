@@ -1,5 +1,27 @@
 package com.github.laplusijns.invoice;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+import org.jspecify.annotations.NonNull;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.util.MimeTypeUtils;
+
+import com.fasterxml.jackson.annotation.JsonClassDescription;
+import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import com.github.laplusijns.auth.UserAccount;
 import com.github.laplusijns.auth.UserAccountRepository;
 import com.github.laplusijns.card.BusinessCard;
@@ -12,28 +34,8 @@ import com.github.laplusijns.image.ImageStorageService;
 import com.vaadin.flow.server.VaadinService;
 import com.vaadin.flow.server.VaadinServletRequest;
 import com.vaadin.hilla.Endpoint;
+
 import jakarta.annotation.security.PermitAll;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.Collections;
-import java.util.List;
-import java.util.Locale;
-import java.util.Set;
-import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import org.jspecify.annotations.NonNull;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.content.Media;
-import org.springframework.core.io.ByteArrayResource;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.util.MimeTypeUtils;
 import reactor.core.publisher.Flux;
 
 @Endpoint
@@ -45,34 +47,19 @@ public class ProcessService {
 			"image/gif");
 	private static final Logger log = LoggerFactory.getLogger(ProcessService.class);
 	private static final String AI_PROMPT = """
-						你是專業的繁體中文名片辨識系統。
+			你是專業的繁體中文名片 OCR 辨識系統。
 
-			任務：
-			仔細閱讀圖片中的所有可見文字，辨識名片持有人及公司資訊。
-			先辨識文字內容與其版面關係，再判斷各文字所屬欄位。
+			請仔細辨識圖片中的名片資訊。
 
-			辨識原則：
-			1. 僅輸出圖片中明確可見的資訊，禁止猜測、補字、推論不存在的內容。
-			2. 圖片可能旋轉、傾斜或方向不正，請先判斷正確閱讀方向後再辨識。
-			3. 繁體中文必須保留原字，不要自行轉為簡體。
-			4. 姓名以中文姓名優先；若同時有英文姓名，格式為「中文姓名（英文姓名）」。
-			5. 職稱需包含姓名附近明確屬於該人的部門、單位、職位，例如「資訊處 資深技術處長」。
-			6. 不可把公司名稱、產品名稱、部門介紹誤認為職稱。
-			7. 電話類型必須依名片上的標示判斷：
-			   - M / Mobile / 行動 / 手機 → mobilePhone
-			   - T / Tel / TEL / 電話 → telephone
-			   - F / Fax / FAX / 傳真 → fax
-			   沒有 F、Fax、FAX 或「傳真」標示，不得填入 fax。
-			8. 保留電話中的國碼、括號、連字號、空白與分機。
-			9. E / Email / E-mail 對應 email。
-			10. A / Addr / Address / 地址對應 address。
-			11. 公司網址、統一編號、統編、股票代號及其他無專屬欄位的重要資訊放入 notes。
-			12. 同一欄位有多個值時，以「、」連接。
-			13. 完全看不清楚或無法可靠判斷的值回傳空字串，不要猜測。
-			14. 對容易混淆的字元特別謹慎，例如：
-			    0/O、1/I/l、5/S、8/B、2/Z、rn/m。
-			15. Email、網址、電話及統編必須逐字核對，不要依常見格式自動修正。
-						""";
+			規則：
+			1. 圖片可能旋轉、傾斜或方向錯誤，請先判斷正確閱讀方向。
+			2. 只能使用圖片中明確可見的資訊，禁止猜測、補字或臆測。
+			3. 看不清楚或無法可靠確認的內容，回傳空字串。
+			4. 保留繁體中文及原始字元，不要自行修正文字。
+			5. Email、網址、電話、統編必須逐字核對。
+			6. 特別注意容易混淆的字元：0/O、1/I/l、5/S、8/B、2/Z。
+			7. 判斷欄位時應同時參考文字標示及版面位置。
+			""";
 
 	private final ChatClient chatClient;
 	private final UserAccountRepository userAccountRepository;
@@ -313,15 +300,80 @@ public class ProcessService {
 				.orElseThrow(() -> new IllegalStateException("User account not found"));
 	}
 
+	@JsonClassDescription("名片 OCR 辨識結果。所有內容只能來自圖片中明確可見的資訊，無法確認時回傳空字串。")
 	public static class BusinessCardRecognition {
+
+		@JsonPropertyDescription("公司完整名稱。保留名片上的原始文字；無法確認時回傳空字串。")
 		public String companyName = "";
+
+		@JsonPropertyDescription("""
+				名片持有人的姓名。
+				中文姓名優先。
+				若同時有中文名及英文名，格式為「中文姓名（英文姓名）」。
+				無法確認時回傳空字串。
+				""")
 		public String name = "";
+
+		@JsonPropertyDescription("""
+				名片持有人的完整職稱。
+				若名片上有明確屬於持有人的部門、處、組、單位等資訊，也一併包含。
+				不可將公司名稱、產品名稱或公司介紹誤認為職稱。
+				無法確認時回傳空字串。
+				""")
 		public String jobTitle = "";
+
+		@JsonPropertyDescription("""
+				一般電話或公司電話。
+				只有明確標示為 T、Tel、TEL、Telephone、電話等才填入。
+				保留國碼、括號、空格、連字號及分機等原始格式。
+				多個值以「、」連接。
+				無法確認時回傳空字串。
+				""")
 		public String telephone = "";
+
+		@JsonPropertyDescription("""
+				行動電話或手機號碼。
+				只有明確標示為 M、Mobile、Cell、手機、行動電話等才填入。
+				保留國碼、括號、空格及連字號等原始格式。
+				多個值以「、」連接。
+				無法確認時回傳空字串。
+				""")
 		public String mobilePhone = "";
+
+		@JsonPropertyDescription("""
+				傳真號碼。
+				只有名片上明確標示 F、Fax、FAX、傳真時才可填入。
+				不可因為某個電話號碼未分類就推測為傳真。
+				保留國碼、括號、空格、連字號及分機等原始格式。
+				多個值以「、」連接。
+				無法確認時回傳空字串。
+				""")
 		public String fax = "";
+
+		@JsonPropertyDescription("""
+				電子郵件地址。
+				通常標示為 E、Email、E-mail 等。
+				必須逐字辨識，不可自行修正常見拼法。
+				多個值以「、」連接。
+				無法確認時回傳空字串。
+				""")
 		public String email = "";
+
+		@JsonPropertyDescription("""
+				名片上的公司、辦公室或聯絡地址。
+				保留原始地址文字與郵遞區號。
+				多個地址以「、」連接。
+				無法確認時回傳空字串。
+				""")
 		public String address = "";
+
+		@JsonPropertyDescription("""
+				沒有專屬欄位但值得保留的名片資訊。
+				包含公司網址、統一編號、統編、公司股票代號等。
+				只能填入圖片中明確可見的資訊，不可自行推測。
+				多個資訊以「、」連接。
+				沒有其他資訊時回傳空字串。
+				""")
 		public String notes = "";
 	}
 
