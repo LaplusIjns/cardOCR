@@ -251,10 +251,11 @@ public class ProcessService {
 		try {
 			final BusinessCard card = businessCardRepository.findByIdAndUser_Id(cardId, userId)
 					.orElseThrow(() -> new IllegalArgumentException("Business card not found"));
-			final UserMessage message = UserMessage.builder().text(AI_PROMPT)
-					.media(new Media(MimeTypeUtils.parseMimeType(mimeType), new ByteArrayResource(imageBytes))).build();
-			BusinessCardRecognition result = chatClient.prompt(new Prompt(message)).call()
-					.entity(BusinessCardRecognition.class);
+			BusinessCardRecognition result = chatClient.prompt().system(AI_PROMPT)
+					.user(u -> u.text("請辨識這張名片。").media(MimeTypeUtils.parseMimeType(mimeType),
+							new ByteArrayResource(imageBytes)))
+					.call()
+					.entity(BusinessCardRecognition.class, spec -> spec.useProviderStructuredOutput().validateSchema());
 			if (result == null) {
 				result = new BusinessCardRecognition();
 			}
