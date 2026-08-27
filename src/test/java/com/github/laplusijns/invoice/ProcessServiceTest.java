@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -33,15 +32,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 class ProcessServiceTest {
 
-    private final ChatClient chatClient = mock(ChatClient.class, RETURNS_DEEP_STUBS);
+    private final CardRecognitionClient cardRecognitionClient = mock(CardRecognitionClient.class);
     private final UserAccountRepository userAccountRepository = mock(UserAccountRepository.class);
     private final BusinessCardRepository businessCardRepository = mock(BusinessCardRepository.class);
     private final BusinessCardChannels channels = mock(BusinessCardChannels.class);
@@ -51,7 +48,7 @@ class ProcessServiceTest {
     private final ExecutorService workerExecutor = mock(ExecutorService.class);
     private final ExecutorService fieldRecognitionExecutor = Executors.newVirtualThreadPerTaskExecutor();
     private final ProcessService service = new ProcessService(
-            chatClient,
+            cardRecognitionClient,
             userAccountRepository,
             businessCardRepository,
             channels,
@@ -79,8 +76,6 @@ class ProcessServiceTest {
     void acceptsAndQueuesMultipleImages() throws Exception {
         when(imageStorageService.store(eq(7L), anyString(), eq("image/png"), any(byte[].class)))
                 .thenAnswer(invocation -> "7/" + invocation.getArgument(1) + ".png");
-        when(chatClient.prompt(any(Prompt.class)).call().entity(ProcessService.BusinessCardRecognition.class))
-                .thenReturn(new ProcessService.BusinessCardRecognition());
         when(businessCardRepository.save(any(BusinessCard.class))).thenAnswer(invocation -> invocation.getArgument(0));
         final String image = "data:image/png;base64,AQID";
 
@@ -125,7 +120,8 @@ class ProcessServiceTest {
         when(businessCardRepository.findAllByUser_IdOrderByCreatedAtDesc(7L)).thenReturn(List.of(card));
         when(businessCardRepository.save(card)).thenReturn(card);
         when(imageStorageService.read("7/card-image.png")).thenReturn(new byte[] {1, 2, 3});
-        when(chatClient.prompt(any(Prompt.class)).call().entity(ProcessService.BusinessCardRecognition.class))
+        when(cardRecognitionClient.recognize(anyString(), anyString(), eq("image/png"), any(byte[].class),
+                eq(ProcessService.BusinessCardRecognition.class)))
                 .thenReturn(completeRecognition());
         final ArgumentCaptor<Runnable> workerTask = ArgumentCaptor.forClass(Runnable.class);
 
@@ -146,7 +142,7 @@ class ProcessServiceTest {
     @Test
     void springSelectsProductionConstructor() {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
-            context.getBeanFactory().registerSingleton("chatClient", chatClient);
+            context.getBeanFactory().registerSingleton("cardRecognitionClient", cardRecognitionClient);
             context.getBeanFactory().registerSingleton("userAccountRepository", userAccountRepository);
             context.getBeanFactory().registerSingleton("businessCardRepository", businessCardRepository);
             context.getBeanFactory().registerSingleton("channels", channels);
@@ -165,7 +161,7 @@ class ProcessServiceTest {
         final CyclicBarrier parallelCallBarrier = new CyclicBarrier(2);
         final Set<String> requestedFields = ConcurrentHashMap.newKeySet();
         final ProcessService focusedService = new ProcessService(
-                chatClient,
+                cardRecognitionClient,
                 userAccountRepository,
                 businessCardRepository,
                 channels,
@@ -210,7 +206,7 @@ class ProcessServiceTest {
                 service.verifyMissingFields(initial, "image/png", new byte[] {1, 2, 3});
 
         assertThat(verified).isSameAs(initial);
-        verifyNoInteractions(chatClient);
+        verifyNoInteractions(cardRecognitionClient);
     }
 
     private static ProcessService.BusinessCardRecognition completeRecognition() {

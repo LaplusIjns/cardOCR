@@ -12,6 +12,21 @@ http://localhost:8080 in your browser.
 You can also import the project to your IDE of choice as you would with any
 Maven project.
 
+## OpenAI Responses API
+
+The OCR backend uses the OpenAI Responses API with image input and Structured Outputs. Configure the API root,
+API key, and model before starting the application:
+
+```powershell
+$env:OPENAI_BASE_URL = "https://api.openai.com/v1"
+$env:OPENAI_API_KEY = "your-api-key"
+$env:SPRING_AI_OPENAI_RESPONSES_MODEL = "your-vision-capable-model"
+```
+
+The client appends `/responses` to the API root. A configured URL ending in `/v1/responses` is also accepted and
+normalized automatically. For small business-card text, image detail defaults to `high`; it can be changed with
+`SPRING_AI_OPENAI_RESPONSES_IMAGE_DETAIL`.
+
 ## Deploying to Production
 
 To create a production build, call `mvnw clean package -Pproduction` (Windows),

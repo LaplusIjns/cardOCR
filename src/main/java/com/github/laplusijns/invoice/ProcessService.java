@@ -19,12 +19,9 @@ import java.util.function.Function;
 import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.core.io.ByteArrayResource;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.util.MimeTypeUtils;
 
 import com.fasterxml.jackson.annotation.JsonClassDescription;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
@@ -150,7 +147,7 @@ public class ProcessService {
 					result -> result.notes,
 					(result, value) -> result.notes = value));
 
-	private final ChatClient chatClient;
+	private final CardRecognitionClient cardRecognitionClient;
 	private final UserAccountRepository userAccountRepository;
 	private final BusinessCardRepository businessCardRepository;
 	private final BusinessCardChannels channels;
@@ -161,18 +158,18 @@ public class ProcessService {
 	private final Map<Long, String> reRecognitionStatuses = new ConcurrentHashMap<>();
 
 	@Autowired
-	public ProcessService(final ChatClient chatClient, final UserAccountRepository userAccountRepository,
+	public ProcessService(final CardRecognitionClient cardRecognitionClient, final UserAccountRepository userAccountRepository,
 			final BusinessCardRepository businessCardRepository, final BusinessCardChannels channels,
 			final ImageStorageService imageStorageService, final ImageCache imageCache) {
-		this(chatClient, userAccountRepository, businessCardRepository, channels, imageStorageService, imageCache,
+		this(cardRecognitionClient, userAccountRepository, businessCardRepository, channels, imageStorageService, imageCache,
 				Executors.newSingleThreadExecutor(), Executors.newVirtualThreadPerTaskExecutor());
 	}
 
-	ProcessService(final ChatClient chatClient, final UserAccountRepository userAccountRepository,
+	ProcessService(final CardRecognitionClient cardRecognitionClient, final UserAccountRepository userAccountRepository,
 			final BusinessCardRepository businessCardRepository, final BusinessCardChannels channels,
 			final ImageStorageService imageStorageService, final ImageCache imageCache,
 			final ExecutorService workerExecutor, final ExecutorService fieldRecognitionExecutor) {
-		this.chatClient = chatClient;
+		this.cardRecognitionClient = cardRecognitionClient;
 		this.userAccountRepository = userAccountRepository;
 		this.businessCardRepository = businessCardRepository;
 		this.channels = channels;
@@ -370,12 +367,11 @@ public class ProcessService {
 	}
 
 	BusinessCardRecognition recognizeImage(final String mimeType, final byte[] imageBytes) {
-		BusinessCardRecognition result = chatClient.prompt().system(AI_PROMPT).user(u -> u.text("""
+		BusinessCardRecognition result = cardRecognitionClient.recognize(AI_PROMPT, """
 				請完整辨識這張名片。
 				請務必掃描整張名片所有可見文字，
 				特別檢查姓名附近的完整職稱，以及小字區域是否有統一編號、統編、公司網址或股票代號。
-				""").media(MimeTypeUtils.parseMimeType(mimeType), new ByteArrayResource(imageBytes))).call()
-				.entity(BusinessCardRecognition.class, spec -> spec.useProviderStructuredOutput().validateSchema());
+				""", mimeType, imageBytes, BusinessCardRecognition.class);
 		if (result == null) {
 			result = new BusinessCardRecognition();
 		}
@@ -404,14 +400,12 @@ public class ProcessService {
 	}
 
 	String recognizeField(final RecognitionField field, final String mimeType, final byte[] imageBytes) {
-		final FieldRecognition result = chatClient.prompt().system(FIELD_VERIFICATION_PROMPT).user(u -> u.text("""
+		final FieldRecognition result = cardRecognitionClient.recognize(FIELD_VERIFICATION_PROMPT, """
 				初次完整辨識的「%s」欄位是空白，請重新聚焦檢查圖片，確認該欄位是否真的不存在。
 
 				欄位定義：%s
 				若找到多個屬於此欄位的值，使用「、」連接；若確認沒有或無法可靠辨識，value 回傳空字串。
-				""".formatted(field.label(), field.instructions()))
-				.media(MimeTypeUtils.parseMimeType(mimeType), new ByteArrayResource(imageBytes))).call()
-				.entity(FieldRecognition.class, spec -> spec.useProviderStructuredOutput().validateSchema());
+				""".formatted(field.label(), field.instructions()), mimeType, imageBytes, FieldRecognition.class);
 		return result == null ? "" : result.value;
 	}
 

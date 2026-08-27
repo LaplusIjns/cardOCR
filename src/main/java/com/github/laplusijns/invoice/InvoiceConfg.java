@@ -1,46 +1,51 @@
 package com.github.laplusijns.invoice;
 
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.converter.BeanOutputConverter;
-import org.springframework.ai.openai.OpenAiChatModel;
-import org.springframework.ai.openai.OpenAiChatModel.ResponseFormat;
-import org.springframework.ai.openai.OpenAiChatModel.ResponseFormat.Type;
-import org.springframework.ai.openai.OpenAiChatOptions;
+import java.time.Duration;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.resilience.annotation.EnableResilientMethods;
 
-import com.github.laplusijns.invoice.ProcessService.BusinessCardRecognition;
+import com.openai.client.OpenAIClient;
+import com.openai.client.okhttp.OpenAIOkHttpClient;
 
 @Configuration
 @EnableResilientMethods
 public class InvoiceConfg {
 
-	private final String baseUrl;
-	private final String apiKey;
-	private final String optionsModel;
-
-	public InvoiceConfg(@Value("${spring.ai.openai.base-url}") final String baseUrl,
-			@Value("${spring.ai.openai.api-key:}") final String apiKey,
-			@Value("${spring.ai.openai.chat.options.model}") final String optionsModel) {
-		this.baseUrl = baseUrl;
-		this.apiKey = apiKey;
-		this.optionsModel = optionsModel;
+	@Bean(destroyMethod = "close")
+	OpenAIClient openAiClient(
+			@Value("${spring.ai.openai.base-url:${OPENAI_BASE_URL:https://api.openai.com/v1}}") final String baseUrl,
+			@Value("${spring.ai.openai.api-key:${OPENAI_API_KEY:}}") final String apiKey,
+			@Value("${spring.ai.openai.timeout:60s}") final Duration timeout,
+			@Value("${spring.ai.openai.max-retries:3}") final int maxRetries) {
+		final OpenAIOkHttpClient.Builder builder = OpenAIOkHttpClient.builder()
+			.fromEnv()
+			.baseUrl(normalizeBaseUrl(baseUrl))
+			.timeout(timeout)
+			.maxRetries(maxRetries);
+		if (apiKey != null && !apiKey.isBlank()) {
+			builder.apiKey(apiKey);
+		}
+		return builder.build();
 	}
 
-	@Bean
-	ChatModel chatModel() {
-		final var openAiChatOptions = OpenAiChatOptions.builder().model(optionsModel)
-				.temperature(1.0).apiKey(apiKey).baseUrl(baseUrl).reasoningEffort("high").build();
+	static String normalizeBaseUrl(final String baseUrl) {
+		if (baseUrl == null || baseUrl.isBlank()) {
+			return "https://api.openai.com/v1";
+		}
 
-		return OpenAiChatModel.builder().options(openAiChatOptions).build();
-	}
-
-	@Bean
-	ChatClient chatClient(final ChatModel chatModel) {
-		return ChatClient.builder(chatModel).defaultAdvisors(new SimpleLoggerAdvisor()).build();
+		String normalized = baseUrl.strip();
+		while (normalized.endsWith("/")) {
+			normalized = normalized.substring(0, normalized.length() - 1);
+		}
+		if (normalized.endsWith("/responses")) {
+			normalized = normalized.substring(0, normalized.length() - "/responses".length());
+		}
+		if (normalized.equals("https://api.openai.com")) {
+			return normalized + "/v1";
+		}
+		return normalized;
 	}
 }
