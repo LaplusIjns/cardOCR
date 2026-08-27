@@ -34,6 +34,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 
@@ -111,6 +112,22 @@ class ProcessServiceTest {
                 .hasMessageContaining("maximum of 20");
 
         verifyNoInteractions(imageStorageService, imageCache, channels);
+    }
+
+    @Test
+    void springSelectsProductionConstructor() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.getBeanFactory().registerSingleton("chatClient", chatClient);
+            context.getBeanFactory().registerSingleton("userAccountRepository", userAccountRepository);
+            context.getBeanFactory().registerSingleton("businessCardRepository", businessCardRepository);
+            context.getBeanFactory().registerSingleton("channels", channels);
+            context.getBeanFactory().registerSingleton("imageStorageService", imageStorageService);
+            context.getBeanFactory().registerSingleton("imageCache", imageCache);
+            context.register(ProcessService.class);
+            context.refresh();
+
+            assertThat(context.getBean(ProcessService.class)).isNotNull();
+        }
     }
 
     @Test

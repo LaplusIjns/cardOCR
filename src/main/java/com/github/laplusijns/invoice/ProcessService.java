@@ -18,6 +18,7 @@ import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -154,6 +155,7 @@ public class ProcessService {
 	private final ExecutorService workerExecutor;
 	private final ExecutorService fieldRecognitionExecutor;
 
+	@Autowired
 	public ProcessService(final ChatClient chatClient, final UserAccountRepository userAccountRepository,
 			final BusinessCardRepository businessCardRepository, final BusinessCardChannels channels,
 			final ImageStorageService imageStorageService, final ImageCache imageCache) {
