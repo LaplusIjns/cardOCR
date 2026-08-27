@@ -33,11 +33,7 @@ public class InvoiceConfg {
 
 	@Bean
 	ChatModel chatModel() {
-		var converter = new BeanOutputConverter<>(BusinessCardRecognition.class);
-
-		var responseFormat = ResponseFormat.builder().type(Type.JSON_SCHEMA).jsonSchema(converter.getJsonSchema())
-				.build();
-		final var openAiChatOptions = OpenAiChatOptions.builder().responseFormat(responseFormat).model(optionsModel)
+		final var openAiChatOptions = OpenAiChatOptions.builder().model(optionsModel)
 				.temperature(1.0).apiKey(apiKey).baseUrl(baseUrl).reasoningEffort("high").build();
 
 		return OpenAiChatModel.builder().options(openAiChatOptions).build();
