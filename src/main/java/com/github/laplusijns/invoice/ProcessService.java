@@ -82,6 +82,7 @@ public class ProcessService {
 			6. Email、網址、電話、統編必須逐字核對。
 			7. 特別注意容易混淆的字元：0/O、1/I/l、5/S、8/B、2/Z。
 			8. 判斷欄位時同時參考文字內容、標示及版面位置。
+			9. 備註只允許統編、股票代號、公司網址三類資訊；其他未分類文字一律不要放入備註。
 			""";
 	private static final String FIELD_VERIFICATION_PROMPT = """
 			你是專業的繁體中文名片 OCR 複核系統。
@@ -144,11 +145,23 @@ public class ProcessService {
 					result -> result.address,
 					(result, value) -> result.address = value),
 			new RecognitionField(
-					"notes",
-					"備註資訊",
-					"尋找統一編號、統編、Tax ID、公司網址或股票代號；統編必須有文字標示或明確語意依據。",
-					result -> result.notes,
-					(result, value) -> result.notes = value));
+					"businessNumber",
+					"統編",
+					"只尋找統一編號、統編、Unified Business Number 或 Tax ID；只回傳號碼，不含標籤。必須有文字標示或明確語意依據，不可把其他 8 位數字當成統編。",
+					result -> result.businessNumber,
+					(result, value) -> result.businessNumber = value),
+			new RecognitionField(
+					"stockCode",
+					"股票代號",
+					"只尋找名片上明確標示的股票代號；只回傳代號，不含標籤，不可根據公司名稱猜測。",
+					result -> result.stockCode,
+					(result, value) -> result.stockCode = value),
+			new RecognitionField(
+					"companyWebsite",
+					"公司網址",
+					"只尋找名片上明確可見的公司官方網站網址；只回傳網址，不含標籤，不可回傳社群帳號、Email 或其他文字。",
+					result -> result.companyWebsite,
+					(result, value) -> result.companyWebsite = value));
 
 	private final ChatClient chatClient;
 	private final UserAccountRepository userAccountRepository;
@@ -335,7 +348,7 @@ public class ProcessService {
 			card.setFax(result.fax);
 			card.setEmail(result.email);
 			card.setAddress(result.address);
-			card.setNotes(result.notes);
+			card.setNotes(formatNotes(result));
 			channels.emit(sessionId, BusinessCardDTO.from(businessCardRepository.save(card)));
 		} catch (Exception exception) {
 			log.error("Business card recognition failed", exception);
@@ -440,7 +453,21 @@ public class ProcessService {
 		card.setFax(result.fax);
 		card.setEmail(result.email);
 		card.setAddress(result.address);
-		card.setNotes(result.notes);
+		card.setNotes(formatNotes(result));
+	}
+
+	static String formatNotes(final BusinessCardRecognition result) {
+		final List<String> notes = new ArrayList<>(3);
+		addNote(notes, "統編", result.businessNumber);
+		addNote(notes, "股票代號", result.stockCode);
+		addNote(notes, "公司網址", result.companyWebsite);
+		return String.join("、", notes);
+	}
+
+	private static void addNote(final List<String> notes, final String label, final String value) {
+		if (!isBlank(value)) {
+			notes.add(label + "：" + value.strip());
+		}
 	}
 
 	private static String mimeType(final String imagePath) {
@@ -535,28 +562,26 @@ public class ProcessService {
 		public String address = "";
 
 		@JsonPropertyDescription("""
-				名片上沒有其他專屬欄位的重要資訊。
-				必須主動掃描整張名片的小字及邊緣區域，不可只辨識主要聯絡資訊。
-
-				特別必須檢查是否存在：
-				- 統一編號
-				- 統編
-				- Unified Business Number
-				- Tax ID
-				- 公司網址
-				- 股票代號
-
-				如果名片明確出現「統一編號」、「統編」、「Tax ID」等標示，
-				必須將標示及其數值完整放入此欄位，例如：
-				「統一編號：12345678」
-
-				不得僅因看到 8 位數字就自行認定為統編；
-				必須有名片上的文字標示或明確語意依據。
-
-				多項資訊使用「、」連接。
-				只有確實沒有這類資訊時才回傳空字串。
+				名片上明確標示的統一編號、統編、Unified Business Number 或 Tax ID。
+				只回傳號碼，不要包含「統編」等標籤，也不要包含其他資訊。
+				不得僅因看到 8 位數字就自行認定為統編；必須有文字標示或明確語意依據。
+				多個值以「、」連接；沒有或無法可靠辨識時回傳空字串。
 				""")
-		public String notes = "";
+		public String businessNumber = "";
+
+		@JsonPropertyDescription("""
+				名片上明確標示的股票代號。
+				只回傳代號，不要包含「股票代號」等標籤，也不要包含其他資訊；不可根據公司名稱猜測。
+				多個值以「、」連接；沒有或無法可靠辨識時回傳空字串。
+				""")
+		public String stockCode = "";
+
+		@JsonPropertyDescription("""
+				名片上明確可見的公司官方網站網址。
+				只回傳網址，不要包含「網址」等標籤，也不要包含社群帳號、Email 或其他資訊。
+				多個值以「、」連接；沒有或無法可靠辨識時回傳空字串。
+				""")
+		public String companyWebsite = "";
 	}
 
 	@JsonClassDescription("名片單一指定欄位的 OCR 複核結果。")

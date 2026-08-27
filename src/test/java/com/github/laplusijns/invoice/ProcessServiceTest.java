@@ -213,6 +213,25 @@ class ProcessServiceTest {
         verifyNoInteractions(chatClient);
     }
 
+    @Test
+    void formatsNotesWithOnlyBusinessNumberStockCodeAndCompanyWebsite() {
+        final ProcessService.BusinessCardRecognition result = new ProcessService.BusinessCardRecognition();
+        result.businessNumber = " 12345678 ";
+        result.stockCode = "2330";
+        result.companyWebsite = "https://example.com";
+
+        assertThat(ProcessService.formatNotes(result))
+                .isEqualTo("統編：12345678、股票代號：2330、公司網址：https://example.com");
+    }
+
+    @Test
+    void omitsMissingAllowedValuesFromNotes() {
+        final ProcessService.BusinessCardRecognition result = new ProcessService.BusinessCardRecognition();
+        result.companyWebsite = "https://example.com";
+
+        assertThat(ProcessService.formatNotes(result)).isEqualTo("公司網址：https://example.com");
+    }
+
     private static ProcessService.BusinessCardRecognition completeRecognition() {
         final ProcessService.BusinessCardRecognition result = new ProcessService.BusinessCardRecognition();
         result.companyName = "範例股份有限公司";
@@ -223,7 +242,9 @@ class ProcessServiceTest {
         result.fax = "02-8765-4321";
         result.email = "alice@example.com";
         result.address = "台北市中正區範例路 1 號";
-        result.notes = "https://example.com";
+        result.businessNumber = "12345678";
+        result.stockCode = "2330";
+        result.companyWebsite = "https://example.com";
         return result;
     }
 }
