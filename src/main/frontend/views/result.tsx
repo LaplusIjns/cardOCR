@@ -1,6 +1,16 @@
 import { ViewConfig } from '@vaadin/hilla-file-router/types.js';
-import { Button, Dialog, FormLayout, Grid, GridColumn, Notification, TextArea, TextField } from '@vaadin/react-components';
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Button,
+  Dialog,
+  FormLayout,
+  Grid,
+  GridColumn,
+  Notification,
+  Select,
+  TextArea,
+  TextField,
+} from '@vaadin/react-components';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ProcessService } from 'Frontend/generated/endpoints';
 import BusinessCardDTO from 'Frontend/generated/com/github/laplusijns/card/BusinessCardDTO';
 
@@ -39,6 +49,7 @@ const ActionRenderer = memo(function ActionRenderer({ item, onDelete, onEdit, on
 });
 
 type EditableField = 'companyName' | 'name' | 'jobTitle' | 'telephone' | 'mobilePhone' | 'fax' | 'email' | 'address' | 'notes';
+type SearchField = 'all' | EditableField | 'status';
 
 const fields: ReadonlyArray<{ key: EditableField; label: string; area?: boolean }> = [
   { key: 'companyName', label: '公司名稱' },
@@ -52,8 +63,46 @@ const fields: ReadonlyArray<{ key: EditableField; label: string; area?: boolean 
   { key: 'notes', label: '備註', area: true },
 ];
 
+const searchFieldOptions: Array<{ label: string; value: SearchField }> = [
+  { label: '全部欄位', value: 'all' },
+  ...fields.map(({ key, label }) => ({ label, value: key })),
+  { label: '狀態', value: 'status' },
+];
+
+const searchableFieldKeys: ReadonlyArray<Exclude<SearchField, 'all'>> = [
+  'companyName',
+  'name',
+  'jobTitle',
+  'telephone',
+  'mobilePhone',
+  'fax',
+  'email',
+  'address',
+  'notes',
+  'status',
+];
+
+const normalizeSearchText = (value: unknown) =>
+  String(value ?? '')
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const matchesSearch = (card: BusinessCardDTO, field: SearchField, query: string) => {
+  const keywords = normalizeSearchText(query).split(' ').filter(Boolean);
+  if (keywords.length === 0) return true;
+
+  const content = normalizeSearchText(
+    field === 'all' ? searchableFieldKeys.map((key) => card[key]).join(' ') : card[field],
+  );
+  return keywords.every((keyword) => content.includes(keyword));
+};
+
 export default function ResultView() {
   const [cards, setCards] = useState<BusinessCardDTO[]>([]);
+  const [searchField, setSearchField] = useState<SearchField>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedPreview, setSelectedPreview] = useState<string | null>(null);
   const [previewRotation, setPreviewRotation] = useState(0);
   const [editingCard, setEditingCard] = useState<BusinessCardDTO | null>(null);
@@ -61,6 +110,11 @@ export default function ResultView() {
   const subscriptionRef = useRef<any>(null);
   const subscriptionPromiseRef = useRef<Promise<string> | null>(null);
   const mountedRef = useRef(false);
+
+  const filteredCards = useMemo(
+    () => cards.filter((card) => matchesSearch(card, searchField, searchQuery)),
+    [cards, searchField, searchQuery],
+  );
 
   const applyCardUpdate = useCallback((update: BusinessCardDTO) => {
     setCards((previous) => previous.some((item) => item.key === update.key)
@@ -143,7 +197,31 @@ export default function ResultView() {
 
   return <div className="flex flex-col h-full box-border w-full p-m">
     <h2 className="mb-m">名片辨識結果</h2>
-    <Grid items={cards} className="w-full" theme="row-stripes wrap-cell-content compact">
+    <div className="flex flex-wrap gap-m items-end mb-m" role="search" aria-label="篩選名片辨識結果">
+      <Select
+        label="搜尋欄位"
+        items={searchFieldOptions}
+        value={searchField}
+        style={{ width: 180 }}
+        onValueChanged={(event) => setSearchField(event.detail.value as SearchField)}
+      />
+      <TextField
+        label="模糊搜尋"
+        placeholder="輸入關鍵字，多個關鍵字以空白分隔"
+        value={searchQuery}
+        clearButtonVisible
+        style={{ minWidth: 280, flex: '1 1 320px' }}
+        onValueChanged={(event) => setSearchQuery(event.detail.value)}
+      />
+      {searchQuery && <Button theme="tertiary" onClick={() => {
+        setSearchField('all');
+        setSearchQuery('');
+      }}>清除篩選</Button>}
+      <span className="text-secondary" aria-live="polite">
+        顯示 {filteredCards.length} / {cards.length} 筆
+      </span>
+    </div>
+    <Grid items={filteredCards} className="w-full" theme="row-stripes wrap-cell-content compact">
       <GridColumn header="操作" renderer={actionRenderer} autoWidth flexGrow={0} />
       <GridColumn header="圖片" renderer={ImageRenderer} autoWidth flexGrow={0} />
       <GridColumn header="公司名稱" path="companyName" autoWidth />
