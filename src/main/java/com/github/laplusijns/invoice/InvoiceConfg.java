@@ -34,7 +34,7 @@ public class InvoiceConfg {
         final var openAiChatOptions = OpenAiChatOptions.builder()
                 .responseFormat(ResponseFormat.builder().type(Type.JSON_OBJECT).build())
                 .model(optionsModel)
-                .temperature(1.0)
+                .temperature(0.0)
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)
                 .build();
