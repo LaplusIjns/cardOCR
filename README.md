@@ -27,6 +27,11 @@ The client appends `/responses` to the API root. A configured URL ending in `/v1
 normalized automatically. For small business-card text, image detail defaults to `high`; it can be changed with
 `SPRING_AI_OPENAI_RESPONSES_IMAGE_DETAIL`.
 
+Responses run in background mode so long-running reasoning is not cancelled by the HTTP request timeout. The
+application polls every two seconds for up to eight minutes. These limits can be changed with
+`SPRING_AI_OPENAI_RESPONSES_POLL_INTERVAL` and `SPRING_AI_OPENAI_RESPONSES_MAX_WAIT`; `SPRING_AI_OPENAI_TIMEOUT`
+only controls each individual HTTP create or poll operation.
+
 ## Deploying to Production
 
 To create a production build, call `mvnw clean package -Pproduction` (Windows),
