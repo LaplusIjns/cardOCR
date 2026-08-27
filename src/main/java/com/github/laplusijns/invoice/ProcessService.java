@@ -49,16 +49,30 @@ public class ProcessService {
 	private static final String AI_PROMPT = """
 			你是專業的繁體中文名片 OCR 辨識系統。
 
-			請仔細辨識圖片中的名片資訊。
+			你的任務不是只辨識主要聯絡資訊，而是完整掃描整張名片所有可見文字，
+			再將資訊分類到對應欄位。
 
-			規則：
+			辨識流程：
+			1. 先判斷圖片正確閱讀方向。
+			2. 從左到右、從上到下完整掃描整張名片。
+			3. 不可只閱讀姓名、公司、電話等大型文字。
+			4. 必須特別檢查姓名附近的小字、職稱、部門、單位。
+			5. 必須特別檢查名片四周、底部及小字區域是否包含：
+			   統一編號、統編、Tax ID、公司網址、股票代號等資訊。
+			6. 完成欄位分類後，在輸出前再次檢查：
+			   - 是否漏掉姓名旁的職稱或部門
+			   - 是否出現「統一編號」「統編」「Tax ID」等標示
+			   - 是否出現公司網址或股票代號
+
+			辨識規則：
 			1. 圖片可能旋轉、傾斜或方向錯誤，請先判斷正確閱讀方向。
 			2. 只能使用圖片中明確可見的資訊，禁止猜測、補字或臆測。
-			3. 看不清楚或無法可靠確認的內容，回傳空字串。
-			4. 保留繁體中文及原始字元，不要自行修正文字。
-			5. Email、網址、電話、統編必須逐字核對。
-			6. 特別注意容易混淆的字元：0/O、1/I/l、5/S、8/B、2/Z。
-			7. 判斷欄位時應同時參考文字標示及版面位置。
+			3. 看不清楚或無法可靠確認的內容才回傳空字串。
+			4. 不要因為文字較小就省略，只要能可靠辨識就必須回傳。
+			5. 保留繁體中文及原始字元，不要自行修正文字。
+			6. Email、網址、電話、統編必須逐字核對。
+			7. 特別注意容易混淆的字元：0/O、1/I/l、5/S、8/B、2/Z。
+			8. 判斷欄位時同時參考文字內容、標示及版面位置。
 			""";
 
 	private final ChatClient chatClient;
@@ -207,10 +221,11 @@ public class ProcessService {
 	private void recognize(final UserAccount user, final String imageId, final String imagePath, final String mimeType,
 			final byte[] imageBytes, final String sessionId) {
 		try {
-			BusinessCardRecognition result = chatClient.prompt().system(AI_PROMPT)
-					.user(u -> u.text("請辨識這張名片。").media(MimeTypeUtils.parseMimeType(mimeType),
-							new ByteArrayResource(imageBytes)))
-					.call()
+			BusinessCardRecognition result = chatClient.prompt().system(AI_PROMPT).user(u -> u.text("""
+					請完整辨識這張名片。
+					請務必掃描整張名片所有可見文字，
+					特別檢查姓名附近的完整職稱，以及小字區域是否有統一編號、統編、公司網址或股票代號。
+					""").media(MimeTypeUtils.parseMimeType(mimeType), new ByteArrayResource(imageBytes))).call()
 					.entity(BusinessCardRecognition.class, spec -> spec.useProviderStructuredOutput().validateSchema());
 			if (result == null) {
 				result = new BusinessCardRecognition();
@@ -238,10 +253,11 @@ public class ProcessService {
 		try {
 			final BusinessCard card = businessCardRepository.findByIdAndUser_Id(cardId, userId)
 					.orElseThrow(() -> new IllegalArgumentException("Business card not found"));
-			BusinessCardRecognition result = chatClient.prompt().system(AI_PROMPT)
-					.user(u -> u.text("請辨識這張名片。").media(MimeTypeUtils.parseMimeType(mimeType),
-							new ByteArrayResource(imageBytes)))
-					.call()
+			BusinessCardRecognition result = chatClient.prompt().system(AI_PROMPT).user(u -> u.text("""
+					請完整辨識這張名片。
+					請務必掃描整張名片所有可見文字，
+					特別檢查姓名附近的完整職稱，以及小字區域是否有統一編號、統編、公司網址或股票代號。
+					""").media(MimeTypeUtils.parseMimeType(mimeType), new ByteArrayResource(imageBytes))).call()
 					.entity(BusinessCardRecognition.class, spec -> spec.useProviderStructuredOutput().validateSchema());
 			if (result == null) {
 				result = new BusinessCardRecognition();
@@ -315,10 +331,13 @@ public class ProcessService {
 		public String name = "";
 
 		@JsonPropertyDescription("""
-				名片持有人的完整職稱。
-				若名片上有明確屬於持有人的部門、處、組、單位等資訊，也一併包含。
+				名片持有人的完整職稱與所屬部門、單位。
+				這是必須主動尋找的重要欄位，不可因字體較小而忽略。
+				必須仔細檢查姓名、英文姓名附近及上下方的文字。
+				例如「資深技術處長」、「業務部 經理」、「資訊處 協理」等。
+				如果部門、處、組、中心等資訊明確屬於持卡人，必須與職稱一起回傳。
 				不可將公司名稱、產品名稱或公司介紹誤認為職稱。
-				無法確認時回傳空字串。
+				只有確實無法辨識時才回傳空字串。
 				""")
 		public String jobTitle = "";
 
@@ -368,11 +387,26 @@ public class ProcessService {
 		public String address = "";
 
 		@JsonPropertyDescription("""
-				沒有專屬欄位但值得保留的名片資訊。
-				包含公司網址、統一編號、統編、公司股票代號等。
-				只能填入圖片中明確可見的資訊，不可自行推測。
-				多個資訊以「、」連接。
-				沒有其他資訊時回傳空字串。
+				名片上沒有其他專屬欄位的重要資訊。
+				必須主動掃描整張名片的小字及邊緣區域，不可只辨識主要聯絡資訊。
+
+				特別必須檢查是否存在：
+				- 統一編號
+				- 統編
+				- Unified Business Number
+				- Tax ID
+				- 公司網址
+				- 股票代號
+
+				如果名片明確出現「統一編號」、「統編」、「Tax ID」等標示，
+				必須將標示及其數值完整放入此欄位，例如：
+				「統一編號：12345678」
+
+				不得僅因看到 8 位數字就自行認定為統編；
+				必須有名片上的文字標示或明確語意依據。
+
+				多項資訊使用「、」連接。
+				只有確實沒有這類資訊時才回傳空字串。
 				""")
 		public String notes = "";
 	}
