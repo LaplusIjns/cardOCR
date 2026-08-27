@@ -63,7 +63,7 @@ public class ProcessService {
             如果有詳細部門也填在職稱
             明確有 f、fax、傳真才會是傳真的值
             看不到或無法確認的欄位請回傳空字串。保留電話分機、國碼及原有標點。
-            notes 僅放名片上有統一編號（統編）、公司股票代號、公司網址等資訊，請完整寫入 notes。不可臆測不存在的內容。
+            名片上有統一編號（統編）、公司股票代號、公司網址等資訊，請完整寫入 notes。不可臆測不存在的內容。
             """;
 
     private final ChatClient chatClient;
