@@ -86,4 +86,43 @@ class ImageCropServiceTest {
         assertThat(cropped.getWidth()).isGreaterThan(300).isLessThan(original.getWidth());
         assertThat(cropped.getHeight()).isGreaterThan(250).isLessThanOrEqualTo(original.getHeight());
     }
+
+    @Test
+    void usesOriginalImageAsCompletePageWhenPaddlePageImageIsUnavailable() throws Exception {
+        final BufferedImage original = new BufferedImage(240, 120, BufferedImage.TYPE_INT_RGB);
+        final ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        ImageIO.write(original, "jpg", encoded);
+        final DocumentInput input = new DocumentInput("image/jpeg", encoded.toByteArray());
+        final OcrDocument ocr =
+                new OcrDocument(List.of(new OcrPage(1, 240, 120, List.of(), null)));
+
+        final List<CroppedImage> images = new ImageCropService().fullPageImages(input, ocr);
+
+        assertThat(images).singleElement().satisfies(image -> {
+            assertThat(image.pageNumber()).isEqualTo(1);
+            assertThat(image.mimeType()).isEqualTo("image/jpeg");
+            assertThat(image.sourceBox()).isEqualTo(new BoundingBox(0, 0, 240, 120));
+            assertThat(image.bytes()).containsExactly(encoded.toByteArray());
+        });
+    }
+
+    @Test
+    void usesPaddlePageImageForPdfFinalVerification() throws Exception {
+        final BufferedImage page = new BufferedImage(300, 150, BufferedImage.TYPE_INT_RGB);
+        final ByteArrayOutputStream encodedPage = new ByteArrayOutputStream();
+        ImageIO.write(page, "png", encodedPage);
+        final DocumentInput input = new DocumentInput("application/pdf", new byte[] {1, 2, 3});
+        final OcrDocument ocr = new OcrDocument(List.of(
+                new OcrPage(1, 300, 150, List.of(), encodedPage.toByteArray())));
+
+        final List<CroppedImage> images = new ImageCropService().fullPageImages(input, ocr);
+
+        assertThat(images).hasSize(1);
+        final CroppedImage image = images.getFirst();
+        assertThat(image.mimeType()).isEqualTo("image/png");
+        assertThat(image.sourceBox()).isEqualTo(new BoundingBox(0, 0, 300, 150));
+        final BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(image.bytes()));
+        assertThat(decoded.getWidth()).isEqualTo(300);
+        assertThat(decoded.getHeight()).isEqualTo(150);
+    }
 }

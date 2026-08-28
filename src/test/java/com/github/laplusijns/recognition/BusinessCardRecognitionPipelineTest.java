@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -15,21 +16,37 @@ import com.github.laplusijns.ocr.OcrDocument;
 import com.github.laplusijns.ocr.OcrPage;
 import com.github.laplusijns.ocr.TraditionalChineseOcrNormalizer;
 import java.util.List;
+import java.util.Set;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.Test;
 
 class BusinessCardRecognitionPipelineTest {
     private final SemanticDisambiguator disambiguator = mock(SemanticDisambiguator.class);
+    private final MissingFieldVisionVerifier finalVerifier = mock(MissingFieldVisionVerifier.class);
 
     @Test
-    void skipsOpenAiWhenJavaRulesResolveEveryLine() {
+    void runsFullImageFinalVerificationWhenCoreFieldsRemainEmpty() {
+        final BusinessCardRecognition verified = completeCoreFields();
+        verified.fax = "02-0000-0000";
+        when(finalVerifier.verify(any(), any(), any(), any())).thenReturn(verified);
         final BusinessCardRecognitionPipeline pipeline = pipeline(
                 document(List.of(block("label", "F", 10, 20, 0.99), block("number", "03-12345678", 40, 20, 0.98))));
 
         final RecognitionResult result = pipeline.recognize(new DocumentInput("image/png", new byte[] {1}));
 
         assertThat(result.businessCard().fax).isEqualTo("03-12345678");
-        assertThat(result.openAiUsed()).isFalse();
+        assertThat(result.businessCard().name).isEqualTo("王小明");
+        assertThat(result.openAiUsed()).isTrue();
         verify(disambiguator, never()).resolve(any(), any(), any());
+        final ArgumentCaptor<Set<FieldType>> missingFields = ArgumentCaptor.forClass(Set.class);
+        final ArgumentCaptor<List<CroppedImage>> fullPageImages = ArgumentCaptor.forClass(List.class);
+        verify(finalVerifier).verify(any(), any(), missingFields.capture(), fullPageImages.capture());
+        assertThat(missingFields.getValue())
+                .containsExactlyInAnyOrder(FieldType.COMPANY_NAME, FieldType.NAME, FieldType.JOB_TITLE);
+        assertThat(fullPageImages.getValue()).singleElement().satisfies(image -> {
+            assertThat(image.mimeType()).isEqualTo("image/png");
+            assertThat(image.bytes()).containsExactly(1);
+        });
     }
 
     @Test
@@ -38,6 +55,10 @@ class BusinessCardRecognitionPipelineTest {
         semantic.companyName = "範例股份有限公司";
         semantic.fax = "02-0000-0000";
         when(disambiguator.resolve(any(), any(), any())).thenReturn(semantic);
+        final BusinessCardRecognition verified = completeCoreFields();
+        verified.companyName = "不可覆寫公司";
+        verified.fax = "02-1111-1111";
+        when(finalVerifier.verify(any(), any(), any(), any())).thenReturn(verified);
         final BusinessCardRecognitionPipeline pipeline = pipeline(document(List.of(
                 block("company", "範例股份有限公司", 10, 10, 0.99),
                 block("label", "F", 10, 50, 0.99),
@@ -47,7 +68,11 @@ class BusinessCardRecognitionPipelineTest {
 
         assertThat(result.openAiUsed()).isTrue();
         assertThat(result.businessCard().companyName).isEqualTo("範例股份有限公司");
+        assertThat(result.businessCard().name).isEqualTo("王小明");
         assertThat(result.businessCard().fax).isEqualTo("03-12345678");
+        final ArgumentCaptor<Set<FieldType>> missingFields = ArgumentCaptor.forClass(Set.class);
+        verify(finalVerifier).verify(any(), any(), missingFields.capture(), any());
+        assertThat(missingFields.getValue()).doesNotContain(FieldType.COMPANY_NAME);
     }
 
     @Test
@@ -59,8 +84,9 @@ class BusinessCardRecognitionPipelineTest {
 
         assertThat(result.ocrDocument().blocks().getFirst().text()).isEqualTo("傳真");
         assertThat(result.businessCard().fax).isEqualTo("03-12345678");
-        assertThat(result.openAiUsed()).isFalse();
+        assertThat(result.openAiUsed()).isTrue();
         verify(disambiguator, never()).resolve(any(), any(), any());
+        verify(finalVerifier).verify(any(), any(), any(), any());
     }
 
     @Test
@@ -126,6 +152,33 @@ class BusinessCardRecognitionPipelineTest {
         verify(disambiguator).resolve(any(), any(), any());
     }
 
+    @Test
+    void skipsFinalVerificationWhenFirstSemanticPassFillsEveryCoreField() {
+        final BusinessCardRecognition semantic = completeCoreFields();
+        when(disambiguator.resolve(any(), any(), any())).thenReturn(semantic);
+        final BusinessCardRecognitionPipeline pipeline =
+                pipeline(document(List.of(block("company", "範例股份有限公司", 10, 10, 0.99))));
+
+        final RecognitionResult result = pipeline.recognize(new DocumentInput("image/png", new byte[] {1}));
+
+        assertThat(result.businessCard().companyName).isEqualTo("範例股份有限公司");
+        assertThat(result.businessCard().name).isEqualTo("王小明");
+        assertThat(result.businessCard().jobTitle).isEqualTo("經理");
+        verify(finalVerifier, never()).verify(any(), any(), any(), any());
+    }
+
+    @Test
+    void invokesFinalVerificationAtMostOnceEvenWhenFieldsRemainMissing() {
+        when(finalVerifier.verify(any(), any(), any(), any())).thenReturn(new BusinessCardRecognition());
+        final BusinessCardRecognitionPipeline pipeline = pipeline(
+                document(List.of(block("label", "F", 10, 20, 0.99), block("number", "03-12345678", 40, 20, 0.98))));
+
+        final RecognitionResult result = pipeline.recognize(new DocumentInput("image/png", new byte[] {1}));
+
+        assertThat(result.businessCard().name).isEmpty();
+        verify(finalVerifier, times(1)).verify(any(), any(), any(), any());
+    }
+
     private BusinessCardRecognitionPipeline pipeline(final OcrDocument document) {
         final OcrClient client = input -> document;
         return new BusinessCardRecognitionPipeline(
@@ -135,7 +188,16 @@ class BusinessCardRecognitionPipelineTest {
                 new BusinessCardRuleEngine(new SemanticNormalizer(), 0.85),
                 new ImageCropService(),
                 disambiguator,
+                finalVerifier,
                 new BusinessCardValidator());
+    }
+
+    private static BusinessCardRecognition completeCoreFields() {
+        final BusinessCardRecognition fields = new BusinessCardRecognition();
+        fields.companyName = "範例股份有限公司";
+        fields.name = "王小明";
+        fields.jobTitle = "經理";
+        return fields;
     }
 
     private static OcrDocument document(final List<OcrBlock> blocks) {

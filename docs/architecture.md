@@ -4,7 +4,7 @@
 
 - PaddleX/PaddleOCR 負責「看出文字與位置」：文件前處理、文字偵測/辨識、Bounding Box、Confidence、頁碼。
 - Java 負責「正規化、重建、規則與控制」：簡體與日文新字體漢字轉臺灣繁體、版面重建、標籤正規化、規則判斷、歧義路由、局部裁圖、格式驗證與持久化。
-- OpenAI 負責「無法由 OCR 與規則確定的語意」：只接收必要上下文，不重新處理每張完整文件。
+- OpenAI 負責「無法由 OCR 與規則確定的語意」：一般歧義只接收必要上下文；核心欄位在第一次流程後仍空白時，才接收完整頁面做一次最終確認。
 
 ## 元件與責任
 
@@ -18,8 +18,9 @@
 | Layout | `LayoutReconstructionService` / `LayoutTextCandidate` | 依 Y 軸重疊、中心距離與 X 排序重建同行資料，並為字距分散的 CJK block 建立非破壞性緊密候選 |
 | Semantic | `SemanticNormalizer` | 將 T/TEL/Phone、F/FAX、M/Mobile、E/Email 等標籤正規化 |
 | Rules | `BusinessCardRuleEngine` | 高信心且格式正確時直接分類；產生明確的 ambiguity reason |
-| Crop | `ImageCropService` | 依歧義行 Bounding Box 加 padding 裁圖，最多四張 |
-| AI adapter | `OpenAiSemanticDisambiguator` | 以 Responses API 傳送座標上下文與局部裁圖，要求 JSON Schema Structured Output |
+| Crop | `ImageCropService` | 依歧義行 Bounding Box 裁圖，並在最終確認時提供最多四張完整頁面 |
+| AI ports | `SemanticDisambiguator` / `MissingFieldVisionVerifier` | 分離一般語意消歧與核心缺欄位的最終視覺確認 |
+| AI adapter | `OpenAiSemanticDisambiguator` | 以 Responses API 傳送座標上下文、局部裁圖或完整頁面，要求 JSON Schema Structured Output |
 | Validation | `BusinessCardValidator` | 去除空白/重複值、驗證 Email/電話/統編/網址並限制 DTO 長度 |
 | Orchestration | `BusinessCardRecognitionPipeline` | 串接以上步驟，保證確定性規則優先且不可被 AI 覆寫 |
 
@@ -77,10 +78,16 @@ rec_boxes[i]  -> OcrBlock.boundingBox
 
 AI adapter 使用 `POST /v1/responses`，在 `text.format` 指定 `type: json_schema`、`strict: true`，且所有 DTO 欄位均為 required string。回傳後仍須經 Java 驗證器處理；模型回傳只合併到尚未由規則確定的欄位。
 
+## 核心缺欄位最終確認
+
+第一次規則與語意流程完成並正規化後，Pipeline 只檢查 `name`、`companyName`、`jobTitle`。任一核心欄位仍空白時，`ImageCropService` 優先採用 PaddleX 回傳的頁面影像；一般圖片缺少頁面影像時改用原始檔。PDF 必須有 PaddleX 頁面影像才能進行此步驟。
+
+`MissingFieldVisionVerifier` 每份文件最多呼叫一次，輸入完整頁面、OCR 版面、目前已確認欄位與 `missingFields`。無論模型回傳什麼內容，Java 只合併呼叫前仍空白且列在 `missingFields` 的三個核心欄位；電話、Email、傳真等欄位及第一次流程已確認的核心欄位都不可被覆寫。最終輸出會再次通過 `BusinessCardValidator`。
+
 ## 失敗邊界
 
 - PaddleX HTTP/格式錯誤：整份辨識失敗，原始文件保留，可重新辨識。
-- 文件無歧義：不需要 OpenAI API key，也不呼叫 OpenAI。
-- 文件有歧義但缺少 OpenAI key：明確回報設定錯誤，不把不確定資料偽裝成確定結果。
+- 文件無歧義且三個核心欄位均有值：不呼叫 OpenAI。
+- 文件有歧義或核心欄位需要最終確認但缺少 OpenAI key：明確回報設定錯誤，不把不確定資料偽裝成確定結果。
 - 局部裁圖失敗：保留文字與版面上下文繼續語意判斷。
 - OpenAI 格式或 refusal 錯誤：拒絕寫入未驗證輸出，交由既有失敗/重試流程處理。
