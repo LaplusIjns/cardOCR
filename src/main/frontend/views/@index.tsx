@@ -1,12 +1,22 @@
 import { ViewConfig } from '@vaadin/hilla-file-router/types.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Notification, Button } from '@vaadin/react-components';
+import { Button, Dialog, Notification } from '@vaadin/react-components';
 import { ProcessService } from 'Frontend/generated/endpoints';
 import { useBlocker, BlockerFunction } from 'react-router';
 
 const MAX_UPLOAD_FILES = 20;
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const SUPPORTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf']);
+
+type UploadPreviewStatus = 'uploading' | 'submitted' | 'failed';
+
+type UploadPreview = {
+  id: string;
+  name: string;
+  url: string;
+  mimeType: string;
+  status: UploadPreviewStatus;
+};
 
 export const config: ViewConfig = {
   menu: { order: 0, icon: 'line-awesome/svg/camera-solid.svg' },
@@ -46,7 +56,10 @@ export default function CameraView() {
   const [flash, setFlash] = useState(false);
   const flashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [previewQueue, setPreviewQueue] = useState<PhotoTask[]>([]);
+  const [uploadPreviews, setUploadPreviews] = useState<UploadPreview[]>([]);
+  const [selectedUploadPreviewId, setSelectedUploadPreviewId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const uploadPreviewUrlsRef = useRef(new Set<string>());
 
   type PhotoTask = {
     id: string;
@@ -63,6 +76,14 @@ export default function CameraView() {
     ProcessService.jsessionId().then((jsessionid: string) => {
       jsessionidRef.current = jsessionid;
     });
+  }, []);
+
+  useEffect(() => {
+    const previewUrls = uploadPreviewUrlsRef.current;
+    return () => {
+      previewUrls.forEach((url) => URL.revokeObjectURL(url));
+      previewUrls.clear();
+    };
   }, []);
 
   const sessionId = useCallback(async () => {
@@ -102,10 +123,27 @@ export default function CameraView() {
       return;
     }
 
+    // Object URL 不需等待檔案轉成 Base64，使用者選取後即可先看到本地預覽。
+    const newPreviews = selected.map<UploadPreview>((file) => {
+      const url = URL.createObjectURL(file);
+      uploadPreviewUrlsRef.current.add(url);
+      return {
+        id: crypto.randomUUID(),
+        name: file.name,
+        url,
+        mimeType: file.type,
+        status: 'uploading',
+      };
+    });
+    const newPreviewIds = new Set(newPreviews.map((preview) => preview.id));
+    setUploadPreviews((current) => [...newPreviews, ...current]);
+
     setUploading(true);
     try {
       const images = await Promise.all(selected.map(readImage));
       const accepted = await ProcessService.processImages(images, await sessionId());
+      setUploadPreviews((current) => current.map((preview) =>
+        newPreviewIds.has(preview.id) ? { ...preview, status: 'submitted' } : preview));
       Notification.show(`已上傳 ${accepted} 張圖片，正在進行 OCR`, {
         duration: 3000,
         theme: 'success',
@@ -113,12 +151,40 @@ export default function CameraView() {
       });
     } catch (error) {
       console.error(error);
+      setUploadPreviews((current) => current.map((preview) =>
+        newPreviewIds.has(preview.id) ? { ...preview, status: 'failed' } : preview));
       Notification.show('圖片上傳失敗，請稍後再試', { theme: 'error', position: 'top-center' });
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
+
+  const closeUploadPreview = (preview: UploadPreview) => {
+    if (uploadPreviewUrlsRef.current.delete(preview.url)) URL.revokeObjectURL(preview.url);
+    setUploadPreviews((current) => current.filter((item) => item.id !== preview.id));
+    setSelectedUploadPreviewId((current) => current === preview.id ? null : current);
+  };
+
+  const selectedUploadPreview = uploadPreviews.find((preview) => preview.id === selectedUploadPreviewId) ?? null;
+
+  const uploadPreviewStatus = (status: UploadPreviewStatus) => {
+    if (status === 'uploading') return '上傳中…';
+    if (status === 'failed') return '上傳失敗';
+    return '已送出辨識';
+  };
+
+  const retainCapturedPreview = useCallback((task: PhotoTask) => {
+    setUploadPreviews((current) => current.some((preview) => preview.id === task.id)
+      ? current
+      : [{
+          id: task.id,
+          name: '拍攝的名片',
+          url: task.image,
+          mimeType: 'image/png',
+          status: 'uploading',
+        }, ...current]);
+  }, []);
 
   const replacePreviewQueue = useCallback((tasks: PhotoTask[]) => {
     previewQueueRef.current = tasks;
@@ -142,8 +208,12 @@ export default function CameraView() {
         try {
           await ProcessService.process(next.image, await sessionId());
           queueRef.current.shift();
+          setUploadPreviews((current) => current.map((preview) =>
+            preview.id === next.id ? { ...preview, status: 'submitted' } : preview));
         } catch (error) {
           console.error(error);
+          setUploadPreviews((current) => current.map((preview) =>
+            preview.id === next.id ? { ...preview, status: 'failed' } : preview));
           Notification.show('圖片處理失敗，請稍後再試', {
             theme: 'error',
             position: 'top-center',
@@ -164,12 +234,13 @@ export default function CameraView() {
 
   const queueForProcessing = useCallback(
     (task: PhotoTask) => {
+      retainCapturedPreview(task);
       if (!queueRef.current.some((queuedTask) => queuedTask.id === task.id)) {
         queueRef.current.push(task);
       }
       void processNext().catch(() => undefined);
     },
-    [processNext],
+    [processNext, retainCapturedPreview],
   );
 
   const hasPendingPhotos = useCallback(
@@ -191,13 +262,14 @@ export default function CameraView() {
     const previewTasks = previewQueueRef.current;
     replacePreviewQueue([]);
     previewTasks.forEach((task) => {
+      retainCapturedPreview(task);
       if (!queueRef.current.some((queuedTask) => queuedTask.id === task.id)) {
         queueRef.current.push(task);
       }
     });
 
     await processNext();
-  }, [processNext, replacePreviewQueue]);
+  }, [processNext, replacePreviewQueue, retainCapturedPreview]);
 
   // 阻止離開頁面時隊列還在上傳
   useBeforeNavigate(hasPendingPhotos, uploadBeforeNavigate);
@@ -410,6 +482,74 @@ export default function CameraView() {
           style={{ top: '3%', right: '3%' }}>
           {uploading ? '上傳中…' : '上傳圖片或 PDF'}
         </Button>
+
+        {uploadPreviews.length > 0 && (
+          <section
+            aria-label="上傳圖片預覽"
+            style={{
+              position: 'absolute',
+              zIndex: 20,
+              top: 'calc(3% + 64px)',
+              left: '3%',
+              right: '3%',
+              padding: 12,
+              borderRadius: 12,
+              background: 'color-mix(in srgb, var(--lumo-base-color) 92%, transparent)',
+              boxShadow: 'var(--lumo-box-shadow-m)',
+              textAlign: 'left',
+            }}>
+            <div className="flex flex-wrap gap-s items-center justify-between mb-s">
+              <strong>上傳預覽</strong>
+              <span className="text-secondary text-s">辨識會在背景進行，圖片仍可隨時開啟查看</span>
+            </div>
+            <div className="flex gap-s" style={{ overflowX: 'auto', paddingBottom: 4 }}>
+              {uploadPreviews.map((preview) => (
+                <article key={preview.id} style={{ flex: '0 0 132px', minWidth: 0 }}>
+                  <button
+                    type="button"
+                    aria-label={`預覽 ${preview.name}`}
+                    onClick={() => setSelectedUploadPreviewId(preview.id)}
+                    style={{
+                      display: 'grid',
+                      width: 132,
+                      height: 84,
+                      padding: 0,
+                      overflow: 'hidden',
+                      placeItems: 'center',
+                      border: '1px solid var(--lumo-contrast-20pct)',
+                      borderRadius: 8,
+                      background: 'var(--lumo-contrast-5pct)',
+                      cursor: 'pointer',
+                    }}>
+                    {preview.mimeType.startsWith('image/')
+                      ? <img src={preview.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                      : <span className="font-bold text-xl">PDF</span>}
+                  </button>
+                  <div className="flex gap-xs items-center mt-xs">
+                    <span
+                      title={preview.name}
+                      style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {preview.name}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`關閉 ${preview.name} 預覽`}
+                      title="關閉預覽（不影響背景辨識）"
+                      onClick={() => closeUploadPreview(preview)}
+                      style={{ border: 0, background: 'transparent', cursor: 'pointer', fontSize: 18 }}>
+                      ×
+                    </button>
+                  </div>
+                  <small
+                    className={preview.status === 'failed' ? 'text-error' : 'text-secondary'}
+                    aria-live="polite">
+                    {uploadPreviewStatus(preview.status)}
+                  </small>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
       </div>
 
       <canvas ref={canvasRef} style={{ display: 'none' }} />
@@ -429,6 +569,38 @@ export default function CameraView() {
             </Button>
           </div>
         </Notification>
+      )}
+
+      {selectedUploadPreview && (
+        <Dialog
+          headerTitle={selectedUploadPreview.name}
+          opened
+          onOpenedChanged={(event) => {
+            if (!event.detail.value) setSelectedUploadPreviewId(null);
+          }}>
+          <div className="flex flex-col gap-s items-center">
+            <span className={selectedUploadPreview.status === 'failed' ? 'text-error' : 'text-secondary'}>
+              {uploadPreviewStatus(selectedUploadPreview.status)}；關閉預覽不會中斷背景辨識
+            </span>
+            {selectedUploadPreview.mimeType.startsWith('image/') ? (
+              <div style={{ width: 'min(80vw, 900px)', height: '65vh', display: 'grid', placeItems: 'center' }}>
+                <img
+                  src={selectedUploadPreview.url}
+                  alt={selectedUploadPreview.name}
+                  style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 8 }}
+                />
+              </div>
+            ) : (
+              <object
+                data={selectedUploadPreview.url}
+                type={selectedUploadPreview.mimeType}
+                aria-label={`${selectedUploadPreview.name} PDF 預覽`}
+                style={{ width: 'min(80vw, 900px)', height: '65vh' }}>
+                <a href={selectedUploadPreview.url} target="_blank" rel="noreferrer">開啟 PDF 預覽</a>
+              </object>
+            )}
+          </div>
+        </Dialog>
       )}
     </div>
   );
