@@ -9,12 +9,15 @@
   -> Spring Boot / Hilla 主應用程式
   -> PaddleX POST http://127.0.0.1:16601/ocr
   -> OCR Block（文字、Bounding Box、Confidence、頁碼）
+  -> 簡體中文／日文新字體漢字偵測與臺灣繁體正規化
   -> Java Layout Reconstruction
   -> Java Semantic Normalization + Rule Engine
   -> 無歧義：直接驗證並產生 DTO
   -> 有歧義：OCR 上下文 + 必要的局部裁圖 -> OpenAI Responses API
   -> Structured Output -> Java DTO -> 正規化 -> SQLite / 後續系統
 ```
+
+PaddleOCR 回傳的每個 block 會先以 OpenCC4J 將簡體中文與日文新字體漢字正規化為臺灣繁體，再進行版面重建，例如 `业务` 轉為 `業務`、`株式会社` 轉為 `株式會社`、`東京駅` 轉為 `東京驛`。這是依 OpenCC 字詞表執行的確定性正規化，不會交給模型自由翻譯，平假名與片假名保持原樣。轉換只修改 `OcrBlock.text`；Bounding Box、Confidence、頁碼與頁面影像維持不變，Email 與 URL 也會被保護而不改寫。
 
 OCR block 不是業務欄位。例如 PaddleOCR 分別回傳同一行的 `F` 與 `03-12345678` 時，Java 會先依座標重建為 `F | 03-12345678`，再由規則引擎判定為 Fax。只有低信心值、未知標籤、未分類電話或其他無法由規則確定的文字才會呼叫 OpenAI。
 

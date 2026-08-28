@@ -13,6 +13,7 @@ import com.github.laplusijns.ocr.OcrBlock;
 import com.github.laplusijns.ocr.OcrClient;
 import com.github.laplusijns.ocr.OcrDocument;
 import com.github.laplusijns.ocr.OcrPage;
+import com.github.laplusijns.ocr.TraditionalChineseOcrNormalizer;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -49,10 +50,24 @@ class BusinessCardRecognitionPipelineTest {
         assertThat(result.businessCard().fax).isEqualTo("03-12345678");
     }
 
+    @Test
+    void convertsSimplifiedPaddleTextBeforeLayoutAndRules() {
+        final BusinessCardRecognitionPipeline pipeline = pipeline(document(List.of(
+                block("label", "传真", 10, 20, 0.99), block("number", "03-12345678", 50, 20, 0.98))));
+
+        final RecognitionResult result = pipeline.recognize(new DocumentInput("image/png", new byte[] {1}));
+
+        assertThat(result.ocrDocument().blocks().getFirst().text()).isEqualTo("傳真");
+        assertThat(result.businessCard().fax).isEqualTo("03-12345678");
+        assertThat(result.openAiUsed()).isFalse();
+        verify(disambiguator, never()).resolve(any(), any(), any());
+    }
+
     private BusinessCardRecognitionPipeline pipeline(final OcrDocument document) {
         final OcrClient client = input -> document;
         return new BusinessCardRecognitionPipeline(
                 client,
+                new TraditionalChineseOcrNormalizer(),
                 new LayoutReconstructionService(),
                 new BusinessCardRuleEngine(new SemanticNormalizer(), 0.85),
                 new ImageCropService(),

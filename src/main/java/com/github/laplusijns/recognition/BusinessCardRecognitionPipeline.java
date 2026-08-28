@@ -3,6 +3,7 @@ package com.github.laplusijns.recognition;
 import com.github.laplusijns.ocr.DocumentInput;
 import com.github.laplusijns.ocr.OcrClient;
 import com.github.laplusijns.ocr.OcrDocument;
+import com.github.laplusijns.ocr.OcrTextNormalizer;
 import java.util.List;
 import java.util.Set;
 import org.springframework.stereotype.Service;
@@ -10,6 +11,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class BusinessCardRecognitionPipeline {
     private final OcrClient ocrClient;
+    private final OcrTextNormalizer ocrTextNormalizer;
     private final LayoutReconstructionService layoutReconstruction;
     private final BusinessCardRuleEngine ruleEngine;
     private final ImageCropService imageCropService;
@@ -18,12 +20,14 @@ public class BusinessCardRecognitionPipeline {
 
     public BusinessCardRecognitionPipeline(
             final OcrClient ocrClient,
+            final OcrTextNormalizer ocrTextNormalizer,
             final LayoutReconstructionService layoutReconstruction,
             final BusinessCardRuleEngine ruleEngine,
             final ImageCropService imageCropService,
             final SemanticDisambiguator semanticDisambiguator,
             final BusinessCardValidator validator) {
         this.ocrClient = ocrClient;
+        this.ocrTextNormalizer = ocrTextNormalizer;
         this.layoutReconstruction = layoutReconstruction;
         this.ruleEngine = ruleEngine;
         this.imageCropService = imageCropService;
@@ -32,7 +36,7 @@ public class BusinessCardRecognitionPipeline {
     }
 
     public RecognitionResult recognize(final DocumentInput input) {
-        final OcrDocument ocr = ocrClient.recognize(input);
+        final OcrDocument ocr = ocrTextNormalizer.normalize(ocrClient.recognize(input));
         final LayoutDocument layout = layoutReconstruction.reconstruct(ocr);
         final RuleEngineResult ruleResult = ruleEngine.classify(layout);
         final boolean hasAmbiguity = !ruleResult.ambiguities().isEmpty();

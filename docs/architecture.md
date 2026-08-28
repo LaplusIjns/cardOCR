@@ -3,7 +3,7 @@
 ## 設計原則
 
 - PaddleX/PaddleOCR 負責「看出文字與位置」：文件前處理、文字偵測/辨識、Bounding Box、Confidence、頁碼。
-- Java 負責「重建、規則與控制」：版面重建、標籤正規化、規則判斷、歧義路由、局部裁圖、格式驗證與持久化。
+- Java 負責「正規化、重建、規則與控制」：簡體與日文新字體漢字轉臺灣繁體、版面重建、標籤正規化、規則判斷、歧義路由、局部裁圖、格式驗證與持久化。
 - OpenAI 負責「無法由 OCR 與規則確定的語意」：只接收必要上下文，不重新處理每張完整文件。
 
 ## 元件與責任
@@ -14,6 +14,7 @@
 | OCR port | `OcrClient` | 定義 Java 與 OCR 服務之間的界面 |
 | OCR adapter | `PaddleXOcrClient` | 呼叫 PaddleX `/ocr` 並保留文字、座標、信心值、頁碼 |
 | OCR domain | `OcrDocument` / `OcrPage` / `OcrBlock` / `BoundingBox` | 不含業務欄位的原始 OCR 結果 |
+| OCR text normalization | `TraditionalChineseOcrNormalizer` | 將簡體與日文新字體漢字轉成臺灣繁體；保護 Email/URL，保留所有 OCR 中繼資料 |
 | Layout | `LayoutReconstructionService` | 依 Y 軸重疊、中心距離與 X 排序將 block 重建成同行資料 |
 | Semantic | `SemanticNormalizer` | 將 T/TEL/Phone、F/FAX、M/Mobile、E/Email 等標籤正規化 |
 | Rules | `BusinessCardRuleEngine` | 高信心且格式正確時直接分類；產生明確的 ambiguity reason |
@@ -50,6 +51,12 @@ rec_boxes[i]  -> OcrBlock.boundingBox
 ```
 
 若服務只回傳 `rec_polys`，Java 會以 polygon 的最小/最大 X、Y 轉成 Bounding Box。OCR 結果在 Layout Reconstruction 完成前不會映射至 `telephone`、`fax` 等業務欄位。
+
+## 簡體與日文漢字轉繁體
+
+`TraditionalChineseOcrNormalizer` 位於 PaddleX adapter 與 Layout Reconstruction 之間。每個 OCR block 先使用 OpenCC4J 日文字體字典將 Shinjitai 漢字轉為標準繁體，再將其餘簡體字與詞組轉為臺灣繁體，例如 `株式会社` 轉為 `株式會社`、`東京駅` 轉為 `東京驛`、`业务经理` 轉為 `業務經理`、`使用互联网` 轉為 `使用網際網路`。
+
+這個步驟依 OpenCC 的日文字體字詞表做確定性正規化，不交給模型自由翻譯；平假名與片假名保持原樣。正規化只建立文字已變更的新 `OcrBlock`，並沿用原本的 block id、頁碼、Bounding Box 與 Confidence。文字不需變更時會直接沿用原 `OcrDocument`。Email 與 URL 被視為不可改寫的識別碼，即使網址路徑內含簡體字或日文漢字也保持原值。
 
 ## 歧義路由
 
