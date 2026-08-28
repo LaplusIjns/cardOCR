@@ -66,6 +66,50 @@ class BusinessCardRuleEngineTest {
     }
 
     @Test
+    void routesCjkLedNameCandidateContainingConfusableLatinGlyphs() {
+        final BoundingBox nameBox = new BoundingBox(10, 10, 170, 35);
+        final LayoutTextCandidate candidate =
+                new LayoutTextCandidate("王OO", List.of("b0", "b1", "b2"), nameBox, 0.82);
+        final LayoutLine line = new LayoutLine(
+                1,
+                "name-line",
+                List.of(),
+                nameBox,
+                0.90,
+                "王 | O | O",
+                List.of(candidate));
+
+        final RuleEngineResult result = engine.classify(new LayoutDocument(List.of(line)));
+
+        assertThat(result.ambiguities()).singleElement().satisfies(ambiguity -> {
+            assertThat(ambiguity.reason()).isEqualTo(AmbiguityReason.POSSIBLE_PERSON_NAME);
+            assertThat(ambiguity.candidateText()).isEqualTo("王OO");
+        });
+    }
+
+    @Test
+    void prioritizesVisionForLowConfidenceIsolatedSurname() {
+        final BoundingBox nameBox = new BoundingBox(10, 10, 40, 40);
+        final LayoutTextCandidate candidate =
+                new LayoutTextCandidate("王", List.of("surname"), nameBox, 0.62);
+        final LayoutLine line = new LayoutLine(
+                1,
+                "name-line",
+                List.of(),
+                nameBox,
+                0.62,
+                "王",
+                List.of(candidate));
+
+        final RuleEngineResult result = engine.classify(new LayoutDocument(List.of(line)));
+
+        assertThat(result.ambiguities()).singleElement().satisfies(ambiguity -> {
+            assertThat(ambiguity.reason()).isEqualTo(AmbiguityReason.POSSIBLE_PERSON_NAME);
+            assertThat(ambiguity.candidateText()).isEqualTo("王");
+        });
+    }
+
+    @Test
     void doesNotTreatCompanyTermAsPersonName() {
         final BoundingBox box = new BoundingBox(10, 10, 120, 35);
         final LayoutLine line = new LayoutLine(

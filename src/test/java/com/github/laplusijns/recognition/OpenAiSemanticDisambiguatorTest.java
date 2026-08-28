@@ -63,6 +63,7 @@ class OpenAiSemanticDisambiguatorTest {
                     .contains("\\\"compactTextCandidates\\\"")
                     .contains("\\\"candidateText\\\":\\\"王小明\\\"")
                     .contains("王 | 小 | 明")
+                    .contains("O、o、0、○")
                     .contains("\"type\":\"input_image\"")
                     .contains("data:image/png;base64,AQI=");
         } finally {

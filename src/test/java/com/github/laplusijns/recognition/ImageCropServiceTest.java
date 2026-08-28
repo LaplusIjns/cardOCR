@@ -66,4 +66,24 @@ class ImageCropServiceTest {
         assertThat(crops).hasSize(4);
         assertThat(crops.getFirst().sourceBox()).isEqualTo(nameBox);
     }
+
+    @Test
+    void expandsIsolatedSurnameCropToIncludeUndetectedAdjacentGlyphs() throws Exception {
+        final BufferedImage original = new BufferedImage(500, 300, BufferedImage.TYPE_INT_RGB);
+        final ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", encoded);
+        final BoundingBox surnameBox = new BoundingBox(200, 100, 225, 125);
+        final LayoutLine line = new LayoutLine(1, "surname", List.of(), surnameBox, 0.90, "王");
+        final OcrDocument ocr = new OcrDocument(List.of(new OcrPage(1, 500, 300, List.of(), null)));
+
+        final List<CroppedImage> crops = new ImageCropService().cropAmbiguousRegions(
+                new DocumentInput("image/png", encoded.toByteArray()),
+                ocr,
+                List.of(new AmbiguousRegion(
+                        line, AmbiguityReason.POSSIBLE_PERSON_NAME, surnameBox, "王")));
+
+        final BufferedImage cropped = ImageIO.read(new ByteArrayInputStream(crops.getFirst().bytes()));
+        assertThat(cropped.getWidth()).isGreaterThan(300).isLessThan(original.getWidth());
+        assertThat(cropped.getHeight()).isGreaterThan(250).isLessThanOrEqualTo(original.getHeight());
+    }
 }

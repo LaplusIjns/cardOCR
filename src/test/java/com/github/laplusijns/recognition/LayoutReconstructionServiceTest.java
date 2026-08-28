@@ -59,6 +59,60 @@ class LayoutReconstructionServiceTest {
     }
 
     @Test
+    void createsCompactCandidateWhenNameContainsOcrConfusableGlyphs() {
+        final OcrDocument document = new OcrDocument(List.of(new OcrPage(
+                1,
+                800,
+                400,
+                List.of(
+                        new OcrBlock("surname", 1, "王", new BoundingBox(20, 30, 45, 55), 0.99),
+                        new OcrBlock("given-1", 1, "ｏ", new BoundingBox(95, 31, 120, 56), 0.80),
+                        new OcrBlock("given-2", 1, "○", new BoundingBox(170, 30, 195, 55), 0.78)),
+                null)));
+
+        final LayoutLine line = service.reconstruct(document).lines().getFirst();
+
+        assertThat(line.text()).isEqualTo("王 | ｏ | ○");
+        assertThat(line.compactTextCandidates())
+                .extracting(LayoutTextCandidate::text)
+                .contains("王o○");
+    }
+
+    @Test
+    void compactsFullWidthConfusableGlyphsInsideOneOcrBlock() {
+        final OcrDocument document = new OcrDocument(List.of(new OcrPage(
+                1,
+                800,
+                400,
+                List.of(new OcrBlock("name", 1, "王 ｏ ｏ", new BoundingBox(20, 30, 195, 55), 0.85)),
+                null)));
+
+        final LayoutLine line = service.reconstruct(document).lines().getFirst();
+
+        assertThat(line.text()).isEqualTo("王 ｏ ｏ");
+        assertThat(line.compactTextCandidates())
+                .extracting(LayoutTextCandidate::text)
+                .containsExactly("王oo");
+    }
+
+    @Test
+    void doesNotCreateCompactNameCandidateForLatinOnlyTitle() {
+        final OcrDocument document = new OcrDocument(List.of(new OcrPage(
+                1,
+                800,
+                400,
+                List.of(
+                        new OcrBlock("title-1", 1, "C", new BoundingBox(20, 30, 45, 55), 0.99),
+                        new OcrBlock("title-2", 1, "E", new BoundingBox(75, 30, 100, 55), 0.99),
+                        new OcrBlock("title-3", 1, "O", new BoundingBox(130, 30, 155, 55), 0.99)),
+                null)));
+
+        final LayoutLine line = service.reconstruct(document).lines().getFirst();
+
+        assertThat(line.compactTextCandidates()).isEmpty();
+    }
+
+    @Test
     void doesNotCompactCjkBlocksWhoseHorizontalDistanceIsTooLarge() {
         final OcrDocument document = new OcrDocument(List.of(new OcrPage(
                 1,

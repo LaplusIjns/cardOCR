@@ -4,6 +4,7 @@ import com.github.laplusijns.ocr.BoundingBox;
 import com.github.laplusijns.ocr.OcrBlock;
 import com.github.laplusijns.ocr.OcrDocument;
 import com.github.laplusijns.ocr.OcrPage;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -81,11 +82,12 @@ public class LayoutReconstructionService {
         final List<LayoutTextCandidate> candidates = new ArrayList<>();
         for (int start = 0; start < blocks.size(); start++) {
             final OcrBlock first = blocks.get(start);
-            final String firstText = compactCjkText(first.text());
+            final String firstText = compactNameGlyphText(first.text());
             if (firstText.isEmpty()) continue;
 
             final int firstCharacters = characterCount(firstText);
-            if (firstCharacters >= 2 && firstCharacters <= MAX_COMPACT_CHARACTERS) {
+            if (firstCharacters <= MAX_COMPACT_CHARACTERS
+                    && containsCjkCharacter(firstText)) {
                 candidates.add(candidate(firstText, List.of(first), first.boundingBox(), first.confidence()));
             }
 
@@ -100,7 +102,7 @@ public class LayoutReconstructionService {
             for (int end = start + 1; end < blocks.size(); end++) {
                 final OcrBlock previous = blocks.get(end - 1);
                 final OcrBlock current = blocks.get(end);
-                final String currentText = compactCjkText(current.text());
+                final String currentText = compactNameGlyphText(current.text());
                 if (currentText.isEmpty() || !canCompact(previous, current)) break;
 
                 characters += characterCount(currentText);
@@ -113,11 +115,13 @@ public class LayoutReconstructionService {
 
                 final double widthPerCharacter = boundingBox.width() / Math.max(1, characters);
                 if (widthPerCharacter > maximumHeight * MAX_COMPACT_WIDTH_PER_CHARACTER_SCALE) break;
-                candidates.add(candidate(
-                        joined.toString(),
-                        candidateBlocks,
-                        boundingBox,
-                        confidenceSum / candidateBlocks.size()));
+                if (containsCjkCharacter(joined)) {
+                    candidates.add(candidate(
+                            joined.toString(),
+                            candidateBlocks,
+                            boundingBox,
+                            confidenceSum / candidateBlocks.size()));
+                }
             }
         }
         return List.copyOf(candidates);
@@ -147,16 +151,36 @@ public class LayoutReconstructionService {
         final double characterScale = Math.max(
                 maximumHeight,
                 Math.max(
-                        previousBox.width() / Math.max(1, characterCount(compactCjkText(previous.text()))),
-                        currentBox.width() / Math.max(1, characterCount(compactCjkText(current.text())))));
+                        previousBox.width() / Math.max(1, characterCount(compactNameGlyphText(previous.text()))),
+                        currentBox.width() / Math.max(1, characterCount(compactNameGlyphText(current.text())))));
         return gap >= -Math.min(previousBox.width(), currentBox.width()) * 0.30
                 && gap <= characterScale * MAX_COMPACT_GAP_SCALE;
     }
 
-    private static String compactCjkText(final String text) {
+    private static String compactNameGlyphText(final String text) {
         if (text == null || text.isBlank()) return "";
-        final String compact = text.replaceAll("\\s+", "");
-        return compact.codePoints().allMatch(LayoutReconstructionService::isCjkCharacter) ? compact : "";
+        final String compact = Normalizer.normalize(text, Normalizer.Form.NFKC)
+                .replaceAll("[\\s|·•・‧.．]+", "");
+        return !compact.isEmpty() && compact.codePoints().allMatch(LayoutReconstructionService::isNameGlyphCharacter)
+                ? compact
+                : "";
+    }
+
+    private static boolean isNameGlyphCharacter(final int codePoint) {
+        if (isCjkCharacter(codePoint)) return true;
+        final Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
+        if (script == Character.UnicodeScript.LATIN && Character.isLetter(codePoint)) return true;
+        return codePoint == '0'
+                || codePoint == '○'
+                || codePoint == '◯'
+                || codePoint == '●'
+                || codePoint == '◎'
+                || codePoint == '□'
+                || codePoint == '?';
+    }
+
+    private static boolean containsCjkCharacter(final CharSequence text) {
+        return text.codePoints().anyMatch(LayoutReconstructionService::isCjkCharacter);
     }
 
     private static boolean isCjkCharacter(final int codePoint) {

@@ -40,8 +40,7 @@ public class ImageCropService {
             final byte[] sourceBytes = page.pageImage().length > 0
                     ? page.pageImage()
                     : (!input.isPdf() && page.pageNumber() == 1 ? input.bytes() : new byte[0]);
-            final CroppedImage crop = crop(
-                    page.pageNumber(), sourceBytes, ambiguity.focusBox(), ambiguity.reason());
+            final CroppedImage crop = crop(page.pageNumber(), sourceBytes, ambiguity);
             if (crop != null) crops.add(crop);
         }
         return List.copyOf(crops);
@@ -64,15 +63,17 @@ public class ImageCropService {
     }
 
     private static CroppedImage crop(
-            final int pageNumber,
-            final byte[] sourceBytes,
-            final BoundingBox box,
-            final AmbiguityReason reason) {
+            final int pageNumber, final byte[] sourceBytes, final AmbiguousRegion ambiguity) {
+        final BoundingBox box = ambiguity.focusBox();
         if (sourceBytes.length == 0 || box.width() <= 0 || box.height() <= 0) return null;
         try {
             final BufferedImage image = ImageIO.read(new ByteArrayInputStream(sourceBytes));
             if (image == null) return null;
-            final double paddingRatio = reason == AmbiguityReason.POSSIBLE_PERSON_NAME ? 0.30 : 0.15;
+            final boolean isolatedSurname = ambiguity.reason() == AmbiguityReason.POSSIBLE_PERSON_NAME
+                    && ambiguity.candidateText().codePointCount(0, ambiguity.candidateText().length()) == 1;
+            final double paddingRatio = isolatedSurname
+                    ? 6.0
+                    : ambiguity.reason() == AmbiguityReason.POSSIBLE_PERSON_NAME ? 0.30 : 0.15;
             final int padding = Math.max(
                     8, (int) Math.ceil(Math.max(box.width(), box.height()) * paddingRatio));
             final int left = clamp((int) Math.floor(box.left()) - padding, 0, image.getWidth() - 1);

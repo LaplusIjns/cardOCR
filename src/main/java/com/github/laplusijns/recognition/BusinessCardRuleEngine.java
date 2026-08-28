@@ -46,8 +46,11 @@ public class BusinessCardRuleEngine {
         final List<AmbiguousRegion> ambiguities = new ArrayList<>();
         for (final LayoutLine line : document.lines()) {
             if (line.text().isBlank()) continue;
+            final LayoutTextCandidate nameCandidate = possiblePersonName(line).orElse(null);
             if (line.confidence() < deterministicConfidence) {
-                ambiguities.add(new AmbiguousRegion(line, AmbiguityReason.LOW_OCR_CONFIDENCE));
+                ambiguities.add(nameCandidate == null
+                        ? new AmbiguousRegion(line, AmbiguityReason.LOW_OCR_CONFIDENCE)
+                        : personNameAmbiguity(line, nameCandidate));
                 continue;
             }
 
@@ -75,15 +78,10 @@ public class BusinessCardRuleEngine {
                                 : AmbiguityReason.UNLABELED_PHONE;
                 ambiguities.add(new AmbiguousRegion(line, reason));
             } else {
-                final LayoutTextCandidate nameCandidate = possiblePersonName(line).orElse(null);
                 if (nameCandidate == null) {
                     ambiguities.add(new AmbiguousRegion(line, AmbiguityReason.UNCLASSIFIED_TEXT));
                 } else {
-                    ambiguities.add(new AmbiguousRegion(
-                            line,
-                            AmbiguityReason.POSSIBLE_PERSON_NAME,
-                            nameCandidate.boundingBox(),
-                            nameCandidate.text()));
+                    ambiguities.add(personNameAmbiguity(line, nameCandidate));
                 }
             }
         }
@@ -97,10 +95,24 @@ public class BusinessCardRuleEngine {
                         .thenComparingInt(candidate -> characterCount(candidate.text())));
     }
 
+    private static AmbiguousRegion personNameAmbiguity(
+            final LayoutLine line, final LayoutTextCandidate nameCandidate) {
+        return new AmbiguousRegion(
+                line,
+                AmbiguityReason.POSSIBLE_PERSON_NAME,
+                nameCandidate.boundingBox(),
+                nameCandidate.text());
+    }
+
     private static int personNameScore(final LayoutTextCandidate candidate) {
         final String text = candidate.text();
         final int length = characterCount(text);
-        if (length < 2 || length > 5 || NON_NAME_TERMS.matcher(text).find()) return Integer.MIN_VALUE;
+        if (length < 1
+                || length > 5
+                || !isCjkCharacter(text.codePointAt(0))
+                || NON_NAME_TERMS.matcher(text).find()) return Integer.MIN_VALUE;
+
+        if (length == 1) return hasCommonSurname(text) ? 4 : Integer.MIN_VALUE;
 
         int score = 1;
         if (hasCommonSurname(text)) score += 2;
@@ -118,6 +130,14 @@ public class BusinessCardRuleEngine {
 
     private static int characterCount(final String text) {
         return text.codePointCount(0, text.length());
+    }
+
+    private static boolean isCjkCharacter(final int codePoint) {
+        final Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
+        return script == Character.UnicodeScript.HAN
+                || script == Character.UnicodeScript.HIRAGANA
+                || script == Character.UnicodeScript.KATAKANA
+                || script == Character.UnicodeScript.HANGUL;
     }
 
     private static boolean applyLabeled(

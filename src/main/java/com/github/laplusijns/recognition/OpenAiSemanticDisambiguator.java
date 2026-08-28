@@ -25,6 +25,7 @@ public class OpenAiSemanticDisambiguator implements SemanticDisambiguator {
             若疑似標籤被 OCR 誤讀（例如 F 被讀成 P），應綜合局部圖片、同行與前後行位置判斷。
             compactTextCandidates 是依字框距離建立的排版候選，不是已確認欄位；請結合原始文字、座標及圖片驗證。
             中文姓名可能因刻意拉大字距而被拆成「王 | 小 | 明」；若候選與圖片支持同一姓名，name 應輸出「王小明」，不可保留 | 或排版空白。
+            姓名字形也可能被 OCR 讀成 O、o、0、○、全形英文字母或方框；這些符號只是待驗證候選。必須以局部圖片抄錄實際可見字形，不可自行猜成其他中文字；若圖片實際印的是拉丁字母或圓圈，應如實保留。
             """;
     private static final List<String> FIELD_NAMES = List.of(
             "companyName",

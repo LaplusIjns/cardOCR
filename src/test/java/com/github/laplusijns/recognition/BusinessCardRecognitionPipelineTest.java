@@ -86,6 +86,46 @@ class BusinessCardRecognitionPipelineTest {
         verify(disambiguator).resolve(any(), any(), any());
     }
 
+    @Test
+    void fillsNameWhenSpacedGlyphsAreRecognizedAsLatinO() {
+        final BusinessCardRecognition semantic = new BusinessCardRecognition();
+        semantic.name = "王OO";
+        when(disambiguator.resolve(any(), any(), any())).thenReturn(semantic);
+        final BusinessCardRecognitionPipeline pipeline = pipeline(document(List.of(
+                block("surname", "王", 10, 20, 0.99),
+                block("given-1", "O", 75, 20, 0.82),
+                block("given-2", "O", 140, 20, 0.80))));
+
+        final RecognitionResult result = pipeline.recognize(new DocumentInput("image/png", new byte[] {1}));
+
+        assertThat(result.businessCard().name).isEqualTo("王OO");
+        assertThat(result.layoutDocument().lines().getFirst().text()).isEqualTo("王 | O | O");
+        assertThat(result.layoutDocument().lines().getFirst().compactTextCandidates())
+                .extracting(LayoutTextCandidate::text)
+                .contains("王OO");
+        assertThat(result.ruleEngineResult().ambiguities())
+                .extracting(AmbiguousRegion::reason)
+                .containsExactly(AmbiguityReason.POSSIBLE_PERSON_NAME);
+    }
+
+    @Test
+    void canRecoverNameFromVisionWhenOcrOnlyDetectsSurname() {
+        final BusinessCardRecognition semantic = new BusinessCardRecognition();
+        semantic.name = "王OO";
+        when(disambiguator.resolve(any(), any(), any())).thenReturn(semantic);
+        final BusinessCardRecognitionPipeline pipeline =
+                pipeline(document(List.of(block("surname", "王", 100, 40, 0.92))));
+
+        final RecognitionResult result = pipeline.recognize(new DocumentInput("image/png", new byte[] {1}));
+
+        assertThat(result.businessCard().name).isEqualTo("王OO");
+        assertThat(result.ruleEngineResult().ambiguities()).singleElement().satisfies(ambiguity -> {
+            assertThat(ambiguity.reason()).isEqualTo(AmbiguityReason.POSSIBLE_PERSON_NAME);
+            assertThat(ambiguity.candidateText()).isEqualTo("王");
+        });
+        verify(disambiguator).resolve(any(), any(), any());
+    }
+
     private BusinessCardRecognitionPipeline pipeline(final OcrDocument document) {
         final OcrClient client = input -> document;
         return new BusinessCardRecognitionPipeline(
