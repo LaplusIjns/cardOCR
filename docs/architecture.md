@@ -15,7 +15,7 @@
 | OCR adapter | `PaddleXOcrClient` | 呼叫 PaddleX `/ocr` 並保留文字、座標、信心值、頁碼 |
 | OCR domain | `OcrDocument` / `OcrPage` / `OcrBlock` / `BoundingBox` | 不含業務欄位的原始 OCR 結果 |
 | OCR text normalization | `TraditionalChineseOcrNormalizer` | 將簡體與日文新字體漢字轉成臺灣繁體；保護 Email/URL，保留所有 OCR 中繼資料 |
-| Layout | `LayoutReconstructionService` | 依 Y 軸重疊、中心距離與 X 排序將 block 重建成同行資料 |
+| Layout | `LayoutReconstructionService` / `LayoutTextCandidate` | 依 Y 軸重疊、中心距離與 X 排序重建同行資料，並為字距分散的 CJK block 建立非破壞性緊密候選 |
 | Semantic | `SemanticNormalizer` | 將 T/TEL/Phone、F/FAX、M/Mobile、E/Email 等標籤正規化 |
 | Rules | `BusinessCardRuleEngine` | 高信心且格式正確時直接分類；產生明確的 ambiguity reason |
 | Crop | `ImageCropService` | 依歧義行 Bounding Box 加 padding 裁圖，最多四張 |
@@ -66,9 +66,12 @@ rec_boxes[i]  -> OcrBlock.boundingBox
 - 標籤疑似誤讀，例如 `P | 03-12345678`；
 - 已辨識標籤右側的值不符合預期格式；
 - 電話沒有可確定類型的標籤；
+- 同行的分散 CJK block 形成疑似姓名候選；
 - 公司、姓名、職稱等需要上下文的未分類文字。
 
-低信心、未知標籤或格式衝突的區域會嘗試局部裁圖。圖片可直接從原始檔裁切；PDF 優先使用 PaddleX 回傳的每頁 `inputImage`。無法取得可解碼頁面影像時仍會傳送文字、座標、相鄰 block 與前後行，不會退回整份文件上傳。
+版面重建不會把 `王 | 小 | 明` 直接覆寫成姓名，而是保留原始行，另附 `compactTextCandidates`、來源 block id、候選 Bounding Box 與 confidence。候選只連接同行、字高相近、中心接近且水平間距在相對字級門檻內的 CJK block，避免用固定像素門檻誤合併不同解析度的名片。
+
+低信心、未知標籤、格式衝突或疑似姓名的區域會嘗試局部裁圖；疑似姓名優先使用其候選 Bounding Box，避免被最多四張的裁圖上限排除。圖片可直接從原始檔裁切；PDF 優先使用 PaddleX 回傳的每頁 `inputImage`。無法取得可解碼頁面影像時仍會傳送原始文字、緊密候選、座標、相鄰 block 與前後行，不會退回整份文件上傳。
 
 ## OpenAI Structured Output
 

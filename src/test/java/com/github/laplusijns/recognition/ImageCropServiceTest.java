@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.github.laplusijns.ocr.BoundingBox;
 import com.github.laplusijns.ocr.DocumentInput;
+import com.github.laplusijns.ocr.OcrBlock;
 import com.github.laplusijns.ocr.OcrDocument;
 import com.github.laplusijns.ocr.OcrPage;
 import java.awt.image.BufferedImage;
@@ -33,5 +34,36 @@ class ImageCropServiceTest {
         assertThat(cropped.getWidth()).isLessThan(original.getWidth());
         assertThat(cropped.getHeight()).isLessThan(original.getHeight());
         assertThat(crops.getFirst().sourceBox()).isEqualTo(question);
+    }
+
+    @Test
+    void prioritizesPossibleNameCropWhenCropLimitIsReached() throws Exception {
+        final BufferedImage original = new BufferedImage(500, 300, BufferedImage.TYPE_INT_RGB);
+        final ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", encoded);
+        final BoundingBox nameBox = new BoundingBox(120, 40, 280, 75);
+        final LayoutLine nameLine = new LayoutLine(
+                1,
+                "name",
+                List.of(new OcrBlock("name-block", 1, "王小明", nameBox, 0.99)),
+                nameBox,
+                0.99,
+                "王 | 小 | 明");
+        final List<AmbiguousRegion> ambiguities = new java.util.ArrayList<>();
+        for (int index = 0; index < 5; index++) {
+            final BoundingBox box = new BoundingBox(20, 100 + index * 30, 100, 120 + index * 30);
+            ambiguities.add(new AmbiguousRegion(
+                    new LayoutLine(1, "low-" + index, List.of(), box, 0.4, "模糊"),
+                    AmbiguityReason.LOW_OCR_CONFIDENCE));
+        }
+        ambiguities.add(new AmbiguousRegion(
+                nameLine, AmbiguityReason.POSSIBLE_PERSON_NAME, nameBox, "王小明"));
+        final OcrDocument ocr = new OcrDocument(List.of(new OcrPage(1, 500, 300, List.of(), null)));
+
+        final List<CroppedImage> crops = new ImageCropService().cropAmbiguousRegions(
+                new DocumentInput("image/png", encoded.toByteArray()), ocr, ambiguities);
+
+        assertThat(crops).hasSize(4);
+        assertThat(crops.getFirst().sourceBox()).isEqualTo(nameBox);
     }
 }

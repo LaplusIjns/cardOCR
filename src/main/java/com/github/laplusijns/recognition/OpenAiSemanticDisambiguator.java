@@ -23,6 +23,8 @@ public class OpenAiSemanticDisambiguator implements SemanticDisambiguator {
             不可覆寫規則已確定的資料，不可猜測圖片或 OCR 中沒有的內容；無法可靠確認時回傳空字串。
             電話分類必須參考相鄰標籤：T/TEL/Phone 是 telephone，F/FAX 是 fax，M/Mobile 是 mobilePhone。
             若疑似標籤被 OCR 誤讀（例如 F 被讀成 P），應綜合局部圖片、同行與前後行位置判斷。
+            compactTextCandidates 是依字框距離建立的排版候選，不是已確認欄位；請結合原始文字、座標及圖片驗證。
+            中文姓名可能因刻意拉大字距而被拆成「王 | 小 | 明」；若候選與圖片支持同一姓名，name 應輸出「王小明」，不可保留 | 或排版空白。
             """;
     private static final List<String> FIELD_NAMES = List.of(
             "companyName",
@@ -74,6 +76,11 @@ public class OpenAiSemanticDisambiguator implements SemanticDisambiguator {
         for (final CroppedImage crop : croppedImages) {
             content.add(Map.of(
                     "type",
+                    "input_text",
+                    "text",
+                    "以下局部圖片對應 page=" + crop.pageNumber() + ", sourceBox=" + crop.sourceBox()));
+            content.add(Map.of(
+                    "type",
                     "input_image",
                     "image_url",
                     "data:" + crop.mimeType() + ";base64," + Base64.getEncoder().encodeToString(crop.bytes()),
@@ -118,6 +125,14 @@ public class OpenAiSemanticDisambiguator implements SemanticDisambiguator {
                         "text", line.text(),
                         "confidence", line.confidence(),
                         "boundingBox", line.boundingBox(),
+                        "compactTextCandidates",
+                                line.compactTextCandidates().stream()
+                                        .map(candidate -> Map.of(
+                                                "text", candidate.text(),
+                                                "blockIds", candidate.blockIds(),
+                                                "confidence", candidate.confidence(),
+                                                "boundingBox", candidate.boundingBox()))
+                                        .toList(),
                         "blocks",
                                 line.blocks().stream()
                                         .map(block -> Map.of(
@@ -126,12 +141,16 @@ public class OpenAiSemanticDisambiguator implements SemanticDisambiguator {
                                                 "boundingBox", block.boundingBox()))
                                         .toList()))
                 .toList();
-        final List<Map<String, String>> ambiguities = ruleResult.ambiguities().stream()
+        final List<Map<String, Object>> ambiguities = ruleResult.ambiguities().stream()
                 .map(ambiguity -> Map.of(
                         "lineId",
                         ambiguity.line().id(),
                         "reason",
-                        ambiguity.reason().name()))
+                        ambiguity.reason().name(),
+                        "candidateText",
+                        ambiguity.candidateText(),
+                        "focusBox",
+                        ambiguity.focusBox()))
                 .toList();
         try {
             return objectMapper.writeValueAsString(Map.of(

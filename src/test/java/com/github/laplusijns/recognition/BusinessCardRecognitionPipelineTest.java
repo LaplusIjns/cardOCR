@@ -63,6 +63,29 @@ class BusinessCardRecognitionPipelineTest {
         verify(disambiguator, never()).resolve(any(), any(), any());
     }
 
+    @Test
+    void fillsNameFromWidelySpacedOcrBlocksWithoutDiscardingRawLayout() {
+        final BusinessCardRecognition semantic = new BusinessCardRecognition();
+        semantic.name = "王小明";
+        when(disambiguator.resolve(any(), any(), any())).thenReturn(semantic);
+        final BusinessCardRecognitionPipeline pipeline = pipeline(document(List.of(
+                block("surname", "王", 10, 20, 0.99),
+                block("given-1", "小", 75, 20, 0.98),
+                block("given-2", "明", 140, 20, 0.97))));
+
+        final RecognitionResult result = pipeline.recognize(new DocumentInput("image/png", new byte[] {1}));
+
+        assertThat(result.businessCard().name).isEqualTo("王小明");
+        assertThat(result.layoutDocument().lines().getFirst().text()).isEqualTo("王 | 小 | 明");
+        assertThat(result.layoutDocument().lines().getFirst().compactTextCandidates())
+                .extracting(LayoutTextCandidate::text)
+                .contains("王小明");
+        assertThat(result.ruleEngineResult().ambiguities())
+                .extracting(AmbiguousRegion::reason)
+                .containsExactly(AmbiguityReason.POSSIBLE_PERSON_NAME);
+        verify(disambiguator).resolve(any(), any(), any());
+    }
+
     private BusinessCardRecognitionPipeline pipeline(final OcrDocument document) {
         final OcrClient client = input -> document;
         return new BusinessCardRecognitionPipeline(

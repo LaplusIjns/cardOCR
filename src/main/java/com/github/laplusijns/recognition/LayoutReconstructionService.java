@@ -13,6 +13,9 @@ import org.springframework.stereotype.Service;
 public class LayoutReconstructionService {
     private static final double MIN_VERTICAL_OVERLAP = 0.40;
     private static final double MIN_CENTER_TOLERANCE = 6.0;
+    private static final double MAX_COMPACT_GAP_SCALE = 3.5;
+    private static final double MAX_COMPACT_WIDTH_PER_CHARACTER_SCALE = 4.0;
+    private static final int MAX_COMPACT_CHARACTERS = 6;
 
     public LayoutDocument reconstruct(final OcrDocument document) {
         final List<LayoutLine> reconstructed = new ArrayList<>();
@@ -68,9 +71,104 @@ public class LayoutReconstructionService {
                     line.blocks,
                     line.boundingBox,
                     confidence,
-                    text));
+                    text,
+                    compactTextCandidates(line.blocks)));
         }
         return result;
+    }
+
+    private static List<LayoutTextCandidate> compactTextCandidates(final List<OcrBlock> blocks) {
+        final List<LayoutTextCandidate> candidates = new ArrayList<>();
+        for (int start = 0; start < blocks.size(); start++) {
+            final OcrBlock first = blocks.get(start);
+            final String firstText = compactCjkText(first.text());
+            if (firstText.isEmpty()) continue;
+
+            final int firstCharacters = characterCount(firstText);
+            if (firstCharacters >= 2 && firstCharacters <= MAX_COMPACT_CHARACTERS) {
+                candidates.add(candidate(firstText, List.of(first), first.boundingBox(), first.confidence()));
+            }
+
+            final List<OcrBlock> candidateBlocks = new ArrayList<>();
+            candidateBlocks.add(first);
+            final StringBuilder joined = new StringBuilder(firstText);
+            BoundingBox boundingBox = first.boundingBox();
+            double confidenceSum = first.confidence();
+            double maximumHeight = Math.max(1.0, first.boundingBox().height());
+            int characters = firstCharacters;
+
+            for (int end = start + 1; end < blocks.size(); end++) {
+                final OcrBlock previous = blocks.get(end - 1);
+                final OcrBlock current = blocks.get(end);
+                final String currentText = compactCjkText(current.text());
+                if (currentText.isEmpty() || !canCompact(previous, current)) break;
+
+                characters += characterCount(currentText);
+                if (characters > MAX_COMPACT_CHARACTERS) break;
+                candidateBlocks.add(current);
+                joined.append(currentText);
+                boundingBox = boundingBox.union(current.boundingBox());
+                confidenceSum += current.confidence();
+                maximumHeight = Math.max(maximumHeight, current.boundingBox().height());
+
+                final double widthPerCharacter = boundingBox.width() / Math.max(1, characters);
+                if (widthPerCharacter > maximumHeight * MAX_COMPACT_WIDTH_PER_CHARACTER_SCALE) break;
+                candidates.add(candidate(
+                        joined.toString(),
+                        candidateBlocks,
+                        boundingBox,
+                        confidenceSum / candidateBlocks.size()));
+            }
+        }
+        return List.copyOf(candidates);
+    }
+
+    private static LayoutTextCandidate candidate(
+            final String text,
+            final List<OcrBlock> blocks,
+            final BoundingBox boundingBox,
+            final double confidence) {
+        return new LayoutTextCandidate(
+                text,
+                blocks.stream().map(OcrBlock::id).toList(),
+                boundingBox,
+                confidence);
+    }
+
+    private static boolean canCompact(final OcrBlock previous, final OcrBlock current) {
+        final BoundingBox previousBox = previous.boundingBox();
+        final BoundingBox currentBox = current.boundingBox();
+        final double maximumHeight = Math.max(1.0, Math.max(previousBox.height(), currentBox.height()));
+        final double minimumHeight = Math.max(1.0, Math.min(previousBox.height(), currentBox.height()));
+        if (minimumHeight / maximumHeight < 0.55) return false;
+        if (Math.abs(previousBox.centerY() - currentBox.centerY()) > maximumHeight * 0.55) return false;
+
+        final double gap = currentBox.left() - previousBox.right();
+        final double characterScale = Math.max(
+                maximumHeight,
+                Math.max(
+                        previousBox.width() / Math.max(1, characterCount(compactCjkText(previous.text()))),
+                        currentBox.width() / Math.max(1, characterCount(compactCjkText(current.text())))));
+        return gap >= -Math.min(previousBox.width(), currentBox.width()) * 0.30
+                && gap <= characterScale * MAX_COMPACT_GAP_SCALE;
+    }
+
+    private static String compactCjkText(final String text) {
+        if (text == null || text.isBlank()) return "";
+        final String compact = text.replaceAll("\\s+", "");
+        return compact.codePoints().allMatch(LayoutReconstructionService::isCjkCharacter) ? compact : "";
+    }
+
+    private static boolean isCjkCharacter(final int codePoint) {
+        final Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
+        return script == Character.UnicodeScript.HAN
+                || script == Character.UnicodeScript.HIRAGANA
+                || script == Character.UnicodeScript.KATAKANA
+                || script == Character.UnicodeScript.HANGUL;
+    }
+
+    private static int characterCount(final String text) {
+        return text.codePointCount(0, text.length());
     }
 
     private static boolean sameLine(final BoundingBox line, final BoundingBox block) {

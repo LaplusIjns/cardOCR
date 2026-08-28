@@ -42,6 +42,48 @@ class BusinessCardRuleEngineTest {
         assertThat(result.ambiguities()).isEmpty();
     }
 
+    @Test
+    void routesCompactSpacedNameCandidateWithItsFocusedRegion() {
+        final BoundingBox nameBox = new BoundingBox(10, 10, 170, 35);
+        final LayoutTextCandidate candidate =
+                new LayoutTextCandidate("王小明", List.of("b0", "b1", "b2"), nameBox, 0.98);
+        final LayoutLine line = new LayoutLine(
+                1,
+                "name-line",
+                List.of(),
+                nameBox,
+                0.98,
+                "王 | 小 | 明",
+                List.of(candidate));
+
+        final RuleEngineResult result = engine.classify(new LayoutDocument(List.of(line)));
+
+        assertThat(result.ambiguities()).singleElement().satisfies(ambiguity -> {
+            assertThat(ambiguity.reason()).isEqualTo(AmbiguityReason.POSSIBLE_PERSON_NAME);
+            assertThat(ambiguity.candidateText()).isEqualTo("王小明");
+            assertThat(ambiguity.focusBox()).isEqualTo(nameBox);
+        });
+    }
+
+    @Test
+    void doesNotTreatCompanyTermAsPersonName() {
+        final BoundingBox box = new BoundingBox(10, 10, 120, 35);
+        final LayoutLine line = new LayoutLine(
+                1,
+                "company-line",
+                List.of(),
+                box,
+                0.98,
+                "王氏企業",
+                List.of(new LayoutTextCandidate("王氏企業", List.of("b0"), box, 0.98)));
+
+        final RuleEngineResult result = engine.classify(new LayoutDocument(List.of(line)));
+
+        assertThat(result.ambiguities())
+                .extracting(AmbiguousRegion::reason)
+                .containsExactly(AmbiguityReason.UNCLASSIFIED_TEXT);
+    }
+
     private static LayoutLine line(final String text, final double confidence, final String... blocks) {
         final List<OcrBlock> ocrBlocks = java.util.stream.IntStream.range(0, blocks.length)
                 .mapToObj(index -> new OcrBlock(

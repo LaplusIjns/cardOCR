@@ -34,8 +34,23 @@ class OpenAiSemanticDisambiguatorTest {
         try {
             final OpenAiSemanticDisambiguator client = new OpenAiSemanticDisambiguator(
                     "http://127.0.0.1:" + server.getAddress().getPort(), "test-key", "test-model");
-            final LayoutDocument layout = new LayoutDocument(List.of());
-            final RuleEngineResult rules = new RuleEngineResult(new BusinessCardRecognition(), Set.of(), List.of());
+            final BoundingBox nameBox = new BoundingBox(10, 20, 180, 50);
+            final LayoutTextCandidate nameCandidate =
+                    new LayoutTextCandidate("王小明", List.of("name-0", "name-1", "name-2"), nameBox, 0.98);
+            final LayoutLine nameLine = new LayoutLine(
+                    1,
+                    "name-line",
+                    List.of(),
+                    nameBox,
+                    0.98,
+                    "王 | 小 | 明",
+                    List.of(nameCandidate));
+            final LayoutDocument layout = new LayoutDocument(List.of(nameLine));
+            final RuleEngineResult rules = new RuleEngineResult(
+                    new BusinessCardRecognition(),
+                    Set.of(),
+                    List.of(new AmbiguousRegion(
+                            nameLine, AmbiguityReason.POSSIBLE_PERSON_NAME, nameBox, "王小明")));
             final CroppedImage crop = new CroppedImage(1, new BoundingBox(1, 2, 3, 4), "image/png", new byte[] {1, 2});
 
             final BusinessCardRecognition result = client.resolve(layout, rules, List.of(crop));
@@ -45,6 +60,9 @@ class OpenAiSemanticDisambiguatorTest {
             assertThat(requestBody.get())
                     .contains("\"type\":\"json_schema\"")
                     .contains("\"strict\":true")
+                    .contains("\\\"compactTextCandidates\\\"")
+                    .contains("\\\"candidateText\\\":\\\"王小明\\\"")
+                    .contains("王 | 小 | 明")
                     .contains("\"type\":\"input_image\"")
                     .contains("data:image/png;base64,AQI=");
         } finally {
